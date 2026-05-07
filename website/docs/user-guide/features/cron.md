@@ -240,8 +240,23 @@ When scheduling jobs, you specify where the output goes:
 | `"weixin"` | Weixin (WeChat) | |
 | `"bluebubbles"` | BlueBubbles (iMessage) | |
 | `"qqbot"` | QQ Bot (Tencent QQ) | |
+| `"multi"` | Fan out to every connected home channel (warns if fewer than 2 are connected) | Resolved at fire time |
+| `"all"` | Fan out to every connected home channel (no minimum) | Resolved at fire time |
+| `"telegram,discord"` | Fan out to a specific set of channels | Comma-separated list |
+| `"origin,multi"` | Deliver to the origin **plus** every other connected channel | Combine any tokens |
 
 The agent's final response is automatically delivered. You do not need to call `send_message` in the cron prompt.
+
+### Routing intents (`multi` / `all`)
+
+`multi` and `all` let you ship one cron job to every messaging channel you have configured, without having to enumerate them by name. They are **resolved at fire time**, so a job created before you wired up Telegram will pick up Telegram on the next tick after you set `TELEGRAM_HOME_CHANNEL`.
+
+Semantics:
+
+- `all` — expand to every platform with a configured home channel. Zero is fine; the job simply produces no delivery targets and is recorded as a delivery failure upstream.
+- `multi` — same expansion as `all`, but expects at least 2 connected channels. If fewer are connected, delivery still proceeds to whatever is available and a warning is logged naming the job.
+
+Both tokens compose with explicit targets. `origin,multi` delivers to the origin chat *plus* every other connected home channel, de-duplicating by `(platform, chat_id, thread_id)`.
 
 ### Response wrapping
 

@@ -360,12 +360,64 @@ def _normalize_deliver_value(deliver) -> str:
     return str(deliver)
 
 
+# Routing intent tokens — resolved at fire time, not create time, so a
+# job created before Telegram was wired up will pick up Telegram once it
+# comes online.  ``multi``/``all`` expand into the set of connected
+# platforms (those with a configured home chat_id) in _expand_routing_tokens.
+_ROUTING_TOKENS = frozenset({"multi", "all"})
+
+
+def _expand_routing_tokens(part: str) -> List[str]:
+    """Expand a routing-intent token to concrete platform names.
+
+    ``multi`` / ``all`` expand to every platform in
+    ``_iter_home_target_platforms()`` that has a configured home chat_id
+    right now.  Unknown / non-token values pass through unchanged as a
+    single-element list, so the caller can treat every token uniformly.
+
+    ``multi`` and ``all`` resolve to the same concrete set today (every
+    connected home channel).  The distinction is kept so validation /
+    logging can surface intent separately (``multi`` expects >= 2
+    connected channels; ``all`` does not).
+    """
+    token = part.lower()
+    if token not in _ROUTING_TOKENS:
+        return [part]
+    expanded: List[str] = []
+    for platform_name in _iter_home_target_platforms():
+        if _get_home_target_chat_id(platform_name):
+            expanded.append(platform_name)
+    return expanded
+
+
 def _resolve_delivery_targets(job: dict) -> List[dict]:
-    """Resolve all concrete auto-delivery targets for a cron job (supports comma-separated deliver)."""
+    """Resolve all concrete auto-delivery targets for a cron job.
+
+    Accepts the legacy comma-separated ``deliver`` string plus two new
+    routing-intent tokens:
+
+    * ``multi`` — expand to every connected home channel.  If fewer than
+      two are connected, a warning is logged (intent violated) but
+      delivery proceeds to whatever is available.
+    * ``all`` — expand to every connected home channel, no minimum.
+
+    Tokens may be combined with explicit targets: ``origin,multi`` and
+    ``multi,telegram:-100:17`` both work.  Duplicate (platform, chat_id,
+    thread_id) tuples are collapsed by the existing dedup pass.
+    """
     deliver = _normalize_deliver_value(job.get("deliver", "local"))
     if deliver == "local":
         return []
-    parts = [p.strip() for p in deliver.split(",") if p.strip()]
+
+    raw_parts = [p.strip() for p in deliver.split(",") if p.strip()]
+
+    # Expand routing intents.  Record whether ``multi`` appeared so we can
+    # warn post-expansion if it resolved to fewer than two platforms.
+    multi_requested = any(p.lower() == "multi" for p in raw_parts)
+    parts: List[str] = []
+    for raw in raw_parts:
+        parts.extend(_expand_routing_tokens(raw))
+
     seen = set()
     targets = []
     for part in parts:
@@ -375,6 +427,14 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
             if key not in seen:
                 seen.add(key)
                 targets.append(target)
+
+    if multi_requested and len({t["platform"].lower() for t in targets}) < 2:
+        logger.warning(
+            "Job '%s': deliver=multi requested but only %d channel(s) connected; "
+            "delivering to whatever is available",
+            job.get("name", job.get("id", "?")),
+            len(targets),
+        )
     return targets
 
 
