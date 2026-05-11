@@ -1422,6 +1422,7 @@ class AIAgent:
         _COMBINED_REVIEW_PROMPT,
     )
 
+
     @staticmethod
     def _summarize_background_review_actions(
         review_messages: List[Dict],
