@@ -538,8 +538,17 @@ class ChatCompletionsTransport(ProviderTransport):
             elif raw_thinking_config:
                 extra_body["thinking_config"] = raw_thinking_config
 
-        if params.get("extra_body_additions"):
-            extra_body.update(params["extra_body_additions"])
+        # Merge any pre-built extra_body additions
+        additions = params.get("extra_body_additions")
+        if additions:
+            extra_body.update(additions)
+
+        # Session pinning: pass session_id into request metadata so
+        # downstream routers (e.g. LiteLLM burndown) can pin sessions
+        # to a specific provider across concurrent requests.
+        _sid = params.get("session_id")
+        if _sid:
+            extra_body.setdefault("metadata", {})["session_id"] = _sid
         if extra_body:
             api_kwargs["extra_body"] = extra_body
         if params.get("request_overrides"):
@@ -580,6 +589,12 @@ class ChatCompletionsTransport(ProviderTransport):
                 extra_body.update(v)
             else:
                 api_kwargs[k] = v
+        # Session pinning: pass session_id into request metadata so
+        # downstream routers (e.g. LiteLLM burndown) can pin sessions
+        # to a specific provider across concurrent requests.
+        _sid = params.get("session_id")
+        if _sid:
+            extra_body.setdefault("metadata", {})["session_id"] = _sid
 
         if extra_body:
             # Native Gemini speaks Google's REST schema: OpenAI-style extra_body
