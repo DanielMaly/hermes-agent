@@ -427,6 +427,10 @@ class HonchoClientConfig:
     # Eager init in tools mode — when true, initializes session during
     # initialize() instead of deferring to first tool call
     init_on_session_start: bool = False
+    # Dialectic prewarm on session init — when true (default), fires a
+    # generic dialectic call during session initialization. When false,
+    # the first turn is anchored to the user's actual message.
+    prefetch_generic_context: bool = True
     # Injection frequency: "every-turn" (default) or "first-turn" (inject only on turn 1)
     injection_frequency: str = "every-turn"
     # Minimum turns between peer.context() API calls (base layer refresh cadence)
@@ -442,8 +446,6 @@ class HonchoClientConfig:
     first_turn_base_wait: float = 3.0
     first_turn_dialectic_wait: float = 2.0
     # Observation mode: legacy string shorthand ("directional" or "unified").
-    # Kept for backward compat; granular per-peer booleans below are preferred.
-    observation_mode: str = "directional"
     # Per-peer observation booleans — maps 1:1 to Honcho's SessionPeerConfig.
     # Resolved from "observation" object in config, falling back to observation_mode preset.
     user_observe_me: bool = True
@@ -708,6 +710,11 @@ class HonchoClientConfig:
                 host_block.get("firstTurnDialecticWait"),
                 raw.get("firstTurnDialecticWait"),
                 default=2.0,
+            ),
+            prefetch_generic_context=_resolve_bool(
+                host_block.get("prefetchGenericContext"),
+                raw.get("prefetchGenericContext"),
+                default=True,
             ),
             # Migration guard: existing configs without an explicit
             # observationMode keep the old "unified" default so users
