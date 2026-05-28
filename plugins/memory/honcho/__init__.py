@@ -506,46 +506,56 @@ class HonchoMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.debug("Honcho memory file migration skipped: %s", e)
 
-        # Query-aware base retrieval starts with the first substantive message.
-        # Generic dialectic prewarm is incompatible with latest-message rewriting.
+        # ----- B7: Pre-warming at init -----
+        # Base context prewarm is cheap and always runs in context/hybrid mode.
+        # Generic dialectic prewarm is optional and must not race the
+        # query-anchored first-turn path when query rewriting is enabled.
         if self._recall_mode in {"context", "hybrid"}:
-            if self._query_rewriter is None or not self._query_rewrite_enabled:
-                _prewarm_query = (
-                    "Summarize what you know about this user. "
-                    "Focus on preferences, current projects, and working style."
-                )
+            try:
+                self._manager.prefetch_context(self._session_key)
+            except Exception as e:
+                logger.debug("Honcho context prewarm failed: %s", e)
 
-                def _prewarm_dialectic() -> None:
-                    try:
-                        r = self._run_dialectic_depth(
-                            _prewarm_query, use_query_rewrite=False
-                        )
-                    except Exception as exc:
-                        logger.debug("Honcho dialectic prewarm failed: %s", exc)
-                        self._dialectic_empty_streak += 1
-                        return
-                    if r and r.strip():
-                        with self._prefetch_lock:
-                            self._prefetch_result = r
-                            self._prefetch_result_fired_at = 0
-                        self._last_dialectic_turn = 0
-                        self._dialectic_empty_streak = 0
-                    else:
-                        self._dialectic_empty_streak += 1
+        if (
+            cfg.prefetch_generic_context
+            and (self._query_rewriter is None or not self._query_rewrite_enabled)
+        ):
+            _prewarm_query = (
+                "Summarize what you know about this user. "
+                "Focus on preferences, current projects, and working style."
+            )
 
-                self._prefetch_thread_started_at = time.monotonic()
-                prewarm_thread = threading.Thread(
-                    target=_prewarm_dialectic,
-                    daemon=True,
-                    name="honcho-prewarm-dialectic",
-                )
-                prewarm_thread.start()
-                self._prefetch_thread = prewarm_thread
-                logger.debug("Honcho dialectic prewarm started for session: %s", self._session_key)
-            else:
-                logger.debug(
-                    "Honcho generic dialectic prewarm skipped: awaiting first user message"
-                )
+            def _prewarm_dialectic() -> None:
+                try:
+                    r = self._run_dialectic_depth(
+                        _prewarm_query, use_query_rewrite=False
+                    )
+                except Exception as exc:
+                    logger.debug("Honcho dialectic prewarm failed: %s", exc)
+                    self._dialectic_empty_streak += 1
+                    return
+                if r and r.strip():
+                    with self._prefetch_lock:
+                        self._prefetch_result = r
+                        self._prefetch_result_fired_at = 0
+                    self._last_dialectic_turn = 0
+                    self._dialectic_empty_streak = 0
+                else:
+                    self._dialectic_empty_streak += 1
+
+            self._prefetch_thread_started_at = time.monotonic()
+            prewarm_thread = threading.Thread(
+                target=_prewarm_dialectic,
+                daemon=True,
+                name="honcho-prewarm-dialectic",
+            )
+            prewarm_thread.start()
+            self._prefetch_thread = prewarm_thread
+            logger.debug("Honcho dialectic prewarm started for session: %s", self._session_key)
+        else:
+            logger.debug(
+                "Honcho generic dialectic prewarm skipped: awaiting first user message"
+            )
 
         self._session_initialized = True
 

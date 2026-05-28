@@ -441,6 +441,10 @@ class HonchoClientConfig:
     # entirely (fully async first turn; context surfaces on later turns).
     first_turn_base_wait: float = 3.0
     first_turn_dialectic_wait: float = 2.0
+    # Dialectic prewarm on session init — when true (default), fires a
+    # generic context call during session initialization. When false, the
+    # first turn's dialectic is anchored to the user's actual message.
+    prefetch_generic_context: bool = True
     # Observation mode: legacy string shorthand ("directional" or "unified").
     # Kept for backward compat; granular per-peer booleans below are preferred.
     observation_mode: str = "directional"
@@ -708,6 +712,11 @@ class HonchoClientConfig:
                 host_block.get("firstTurnDialecticWait"),
                 raw.get("firstTurnDialecticWait"),
                 default=2.0,
+            ),
+            prefetch_generic_context=_resolve_bool(
+                host_block.get("prefetchGenericContext"),
+                raw.get("prefetchGenericContext"),
+                default=True,
             ),
             # Migration guard: existing configs without an explicit
             # observationMode keep the old "unified" default so users
