@@ -679,6 +679,9 @@ class HonchoMemoryProvider(MemoryProvider):
                 self._base_context_cache = ""
                 self._last_context_turn = self._turn_count
                 try:
+                    # Keep upstream's non-blocking first-turn prefetch behavior,
+                    # but anchor the fetch to the current user query so Honcho
+                    # returns topic-relevant context instead of a broad dump.
                     self._manager.prefetch_context(self._session_key, query or None)
                 except Exception as e:
                     logger.debug("Honcho base context prefetch failed: %s", e)
