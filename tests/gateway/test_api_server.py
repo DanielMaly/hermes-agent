@@ -337,6 +337,57 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
 
+    def test_resolve_model_alias_uses_string_and_dict_entries(self, monkeypatch):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: {
+                "model_aliases": {
+                    "fast": "openrouter/deepseek/deepseek-chat",
+                    "smart": {"model": "anthropic/claude-sonnet-4.5", "provider": "openrouter"},
+                }
+            },
+        )
+
+        assert adapter._resolve_model_alias("fast") == "openrouter/deepseek/deepseek-chat"
+        assert adapter._resolve_model_alias("smart") == "anthropic/claude-sonnet-4.5"
+        assert adapter._resolve_model_alias("raw-model-name") == "raw-model-name"
+
+    def test_create_agent_uses_request_model_override_without_changing_provider(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "custom:gateway",
+                "base_url": "https://gateway.example.test/v1",
+                "api_key": "sk-test",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "default-model")
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: {"model_aliases": {"fast": "openrouter/deepseek/deepseek-chat"}},
+        )
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(session_id="api-session", model_override="fast")
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "openrouter/deepseek/deepseek-chat"
+        assert captured["provider"] == "custom:gateway"
+        assert captured["base_url"] == "https://gateway.example.test/v1"
+
 
 # ---------------------------------------------------------------------------
 # Auth checking
@@ -3479,6 +3530,156 @@ class TestSessionKeyHeader:
             assert resp.status == 200
             # _create_agent must be called with gateway_session_key threaded through
             assert captured_kwargs.get("gateway_session_key") == "agent:main:webui:dm:user-7"
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_threads_body_model_override(self, auth_adapter):
+        """The documented request body model field selects the backing AIAgent model."""
+        captured_kwargs = {}
+
+        def _fake_create_agent(**kwargs):
+            captured_kwargs.update(kwargs)
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok", "messages": []}
+            mock_agent.session_prompt_tokens = 0
+            mock_agent.session_completion_tokens = 0
+            mock_agent.session_total_tokens = 0
+            return mock_agent
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent", side_effect=_fake_create_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={"model": "deepseek-v4-pro", "messages": [{"role": "user", "content": "hi"}]},
+                )
+            assert resp.status == 200
+            assert captured_kwargs.get("model_override") == "deepseek-v4-pro"
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_header_model_override_wins_over_body(self, auth_adapter):
+        """X-Hermes-Model takes precedence over the OpenAI body model field."""
+        captured_kwargs = {}
+
+        def _fake_create_agent(**kwargs):
+            captured_kwargs.update(kwargs)
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok", "messages": []}
+            mock_agent.session_prompt_tokens = 0
+            mock_agent.session_completion_tokens = 0
+            mock_agent.session_total_tokens = 0
+            return mock_agent
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent", side_effect=_fake_create_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret", "X-Hermes-Model": "header-model"},
+                    json={"model": "body-model", "messages": [{"role": "user", "content": "hi"}]},
+                )
+            assert resp.status == 200
+            assert captured_kwargs.get("model_override") == "header-model"
+
+    @pytest.mark.asyncio
+    async def test_responses_endpoint_threads_body_model_override(self, auth_adapter):
+        """Responses API also honors the documented request body model field."""
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={"model": "deepseek-v4-pro", "input": "hello", "store": False},
+                )
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["model_override"] == "deepseek-v4-pro"
+
+    @pytest.mark.asyncio
+    async def test_responses_endpoint_header_model_override_wins_over_body(self, auth_adapter):
+        """Responses API gives X-Hermes-Model the same precedence as chat completions."""
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    headers={"Authorization": "Bearer sk-secret", "X-Hermes-Model": "header-model"},
+                    json={"model": "body-model", "input": "hello", "store": False},
+                )
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["model_override"] == "header-model"
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_echoes_effective_model_in_response(self, auth_adapter):
+        """The OpenAI response model field reflects the actually-routed model, not the gateway default."""
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok", "messages": []}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={"model": "claude-sonnet-4", "messages": [{"role": "user", "content": "hi"}]},
+                )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["model"] == "claude-sonnet-4"
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_isolates_different_models(self, auth_adapter):
+        """Two requests with the same Idempotency-Key but different model overrides
+        must not collide on the cached response."""
+        mock_result = {"final_response": "alpha", "messages": [], "api_calls": 1}
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent", return_value=MagicMock(
+                run_conversation=MagicMock(return_value=mock_result),
+                session_prompt_tokens=0,
+                session_completion_tokens=0,
+                session_total_tokens=0,
+            )):
+                resp1 = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Idempotency-Key": "idem-same-key",
+                        "X-Hermes-Model": "model-a",
+                    },
+                    json={"messages": [{"role": "user", "content": "hi"}]},
+                )
+            assert resp1.status == 200
+
+            mock_result_b = {"final_response": "beta", "messages": [], "api_calls": 1}
+            with patch.object(auth_adapter, "_create_agent", return_value=MagicMock(
+                run_conversation=MagicMock(return_value=mock_result_b),
+                session_prompt_tokens=0,
+                session_completion_tokens=0,
+                session_total_tokens=0,
+            )):
+                resp2 = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Idempotency-Key": "idem-same-key",
+                        "X-Hermes-Model": "model-b",
+                    },
+                    json={"messages": [{"role": "user", "content": "hi"}]},
+                )
+            assert resp2.status == 200
+            # Different model overrides produce different fingerprints,
+            # so the second request must hit the agent, not the idempotency cache.
+            data1 = await resp1.json()
+            data2 = await resp2.json()
+            assert data1["choices"][0]["message"]["content"] != data2["choices"][0]["message"]["content"]
 
     @pytest.mark.asyncio
     async def test_responses_endpoint_accepts_session_key(self, auth_adapter):
