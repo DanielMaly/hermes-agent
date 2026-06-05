@@ -802,6 +802,34 @@ class APIServerAdapter(BasePlatformAdapter):
             pass
         return "hermes-agent"
 
+    def _resolve_model_alias(self, model_name: str) -> str:
+        """Resolve a per-request model name through config.yaml model_aliases.
+
+        If the name matches an alias, expand it.  Otherwise use it as-is
+        (the provider proxy — e.g. litellm — will handle the routing).
+        """
+        from gateway.run import _resolve_gateway_model, _load_gateway_config
+
+        if not model_name or not model_name.strip():
+            return _resolve_gateway_model()
+        name = model_name.strip()
+        try:
+            user_config = _load_gateway_config()
+        except Exception:
+            user_config = {}
+        aliases = user_config.get("model_aliases", {})
+        if isinstance(aliases, dict):
+            entry = aliases.get(name)
+            if isinstance(entry, dict):
+                # dict form: {model: "full-name", provider: "..."}
+                resolved = entry.get("model", name)
+                return resolved if resolved else name
+            elif isinstance(entry, str):
+                # simple string alias
+                return entry
+        # No alias match — use the name directly.
+        return name
+
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""
         if not origin or not self._cors_origins:
@@ -1010,6 +1038,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        model_override: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1025,6 +1054,11 @@ class APIServerAdapter(BasePlatformAdapter):
         key is meant to persist across transcripts so long-term memory
         providers (e.g. Honcho) can scope their per-chat state correctly
         — matching the semantics of the native gateway's ``session_key``.
+
+        ``model_override`` allows per-request model switching.  When
+        provided, the model name is resolved through config.yaml model_aliases
+        and used instead of the gateway default.  This intentionally does not
+        change provider credentials; provider switching is a separate concern.
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner
@@ -1032,7 +1066,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
-        model = _resolve_gateway_model()
+
+        # Per-request model switching: resolve aliases, fall back to default.
+        if model_override:
+            model = self._resolve_model_alias(model_override)
+        else:
+            model = _resolve_gateway_model()
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -1836,6 +1875,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
+        # Per-request model switching: prefer X-Hermes-Model header, then body model.
+        requested_model = (request.headers.get("X-Hermes-Model", "") or "").strip()
+        model_override = requested_model or (model_name if model_name != self._model_name else None)
+        # Echo the effective model in the response so callers can verify which
+        # model actually served the request.  When no override is active the
+        # advertised model name is used (same as before).
+        effective_model = model_override or model_name
         created = int(time.time())
 
         if stream:
@@ -1920,13 +1966,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                model_override=model_override,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
             agent_task.add_done_callback(lambda _fut: _stream_q.put(None))
 
             return await self._write_sse_chat_completion(
-                request, completion_id, model_name, created, _stream_q,
+                request, completion_id, effective_model, created, _stream_q,
                 agent_task, agent_ref, session_id=session_id,
                 gateway_session_key=gateway_session_key,
             )
@@ -1939,11 +1986,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                model_override=model_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            # Fold the model override into the fingerprint so two requests
+            # with the same Idempotency-Key but different routed models
+            # don't collide on the cached response.
+            fp_body = dict(body)
+            if model_override:
+                fp_body["__override_model__"] = model_override
+            fp = _make_request_fingerprint(
+                fp_body,
+                keys=["model", "messages", "tools", "tool_choice", "stream", "__override_model__"],
+            )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -2009,7 +2066,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "id": completion_id,
             "object": "chat.completion",
             "created": created,
-            "model": model_name,
+            "model": effective_model,
             "choices": [
                 {
                     "index": 0,
@@ -2818,6 +2875,14 @@ class APIServerAdapter(BasePlatformAdapter):
         conversation = body.get("conversation")
         store = _coerce_request_bool(body.get("store"), default=True)
 
+        # Per-request model switching: prefer X-Hermes-Model header, then body model.
+        _resp_model_name = body.get("model", self._model_name)
+        _resp_requested_model = (request.headers.get("X-Hermes-Model", "") or "").strip()
+        model_override = _resp_requested_model or (_resp_model_name if _resp_model_name != self._model_name else None)
+        # Echo the effective model in the response so callers can verify which
+        # model actually served the request.
+        _resp_effective_model = model_override or _resp_model_name
+
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:
             return web.json_response(_openai_error("Cannot use both 'conversation' and 'previous_response_id'"), status=400)
@@ -2952,6 +3017,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                model_override=model_override,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2959,12 +3025,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
             response_id = f"resp_{uuid.uuid4().hex[:28]}"
             model_name = body.get("model", self._model_name)
+            _resp_effective_model_sse = model_override or model_name
             created_at = int(time.time())
 
             return await self._write_sse_responses(
                 request=request,
                 response_id=response_id,
-                model=model_name,
+                model=_resp_effective_model_sse,
                 created_at=created_at,
                 stream_q=_stream_q,
                 agent_task=agent_task,
@@ -2985,13 +3052,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                model_override=model_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
+            fp_body = dict(body)
+            if model_override:
+                fp_body["__override_model__"] = model_override
             fp = _make_request_fingerprint(
-                body,
-                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
+                fp_body,
+                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools", "__override_model__"],
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
@@ -3042,7 +3113,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "response",
             "status": "completed",
             "created_at": created_at,
-            "model": body.get("model", self._model_name),
+            "model": _resp_effective_model,
             "output": output_items,
             "usage": {
                 "input_tokens": usage.get("input_tokens", 0),
@@ -3495,6 +3566,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        model_override: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3527,6 +3599,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_start_callback=tool_start_callback,
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
+                    model_override=model_override,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
@@ -3656,6 +3729,11 @@ class APIServerAdapter(BasePlatformAdapter):
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
 
+        # Per-request model switching for /v1/runs
+        _runs_model_name = body.get("model", self._model_name)
+        _runs_requested_model = (request.headers.get("X-Hermes-Model", "") or "").strip()
+        runs_model_override = _runs_requested_model or (_runs_model_name if _runs_model_name != self._model_name else None)
+
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
         conversation_history: List[Dict[str, str]] = []
@@ -3744,6 +3822,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
+                    model_override=runs_model_override,
                 )
                 self._active_run_agents[run_id] = agent
 
