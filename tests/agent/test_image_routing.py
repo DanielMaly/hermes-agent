@@ -113,6 +113,7 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=False):
             assert decide_image_input_mode("deepseek", "deepseek-v4-pro", cfg) == "text"
 
+
     def test_none_config_is_auto(self):
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", None) == "native"

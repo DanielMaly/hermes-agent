@@ -503,6 +503,7 @@ def decide_image_input_mode(
         return "native"
     if _explicit_aux_vision_override(cfg):
         return "text"
+
     return "text"
 
 
