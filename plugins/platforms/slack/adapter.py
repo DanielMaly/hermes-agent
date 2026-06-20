@@ -3175,16 +3175,21 @@ class SlackAdapter(BasePlatformAdapter):
             is_bot=bool(event.get("bot_id")) or event.get("subtype") == "bot_message",
         )
 
-        # Per-channel ephemeral prompt
+        # Per-channel ephemeral prompt/model binding
         from gateway.platforms.base import (
+            resolve_channel_model_binding,
             resolve_channel_prompt,
             resolve_channel_skills,
         )
-
         _channel_prompt = resolve_channel_prompt(
             self.config.extra,
             channel_id,
             None,
+        )
+        _channel_model_binding = resolve_channel_model_binding(
+            self.config.extra,
+            thread_ts or channel_id,
+            channel_id if thread_ts else None,
         )
         _auto_skill = resolve_channel_skills(
             self.config.extra,
@@ -3221,6 +3226,7 @@ class SlackAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=_channel_prompt,
+            channel_model_binding=_channel_model_binding,
             reply_to_text=reply_to_text,
             auto_skill=_auto_skill,
         )
