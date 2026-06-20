@@ -264,3 +264,28 @@ whatsapp:
 - Use a **dedicated phone number** for the bot to isolate risk from your personal account
 - If you suspect compromise, unlink the device from WhatsApp → Settings → Linked Devices
 - Phone numbers in logs are partially redacted, but review your log retention policy
+
+## Per-Channel Model Bindings
+
+WhatsApp supports `channel_model_bindings` — durable per-chat model/provider defaults keyed by WhatsApp JID. This is the same mechanism used by Discord, Slack, Telegram, and Mattermost.
+
+```yaml
+whatsapp:
+  channel_model_bindings:
+    # DM — use a cheaper model for personal chats
+    "420777123456@s.whatsapp.net":
+      provider: openrouter
+      model: openrouter/auto
+    # Group — use a stronger model for group discussions
+    "120363000000000000@g.us":
+      provider: anthropic
+      model: claude-sonnet-4-6
+    # Shorthand: model-only binding (uses global provider)
+    "420999888777@s.whatsapp.net": openrouter/auto
+```
+
+WhatsApp JIDs are:
+- `@s.whatsapp.net` for direct messages (e.g. `420777123456@s.whatsapp.net`)
+- `@g.us` for group chats (e.g. `120363000000000000@g.us`)
+
+Unlike Discord/Telegram, WhatsApp has no threads — bindings are flat per-chat. Session-scoped `/model` overrides still take precedence over channel bindings; `/new`, `/reset`, or gateway restart clears the override and reveals the channel binding again.
