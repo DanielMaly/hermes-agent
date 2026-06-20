@@ -927,10 +927,15 @@ class MattermostAdapter(BasePlatformAdapter):
             message_id=post_id,
         )
 
-        # Per-channel ephemeral prompt
-        from gateway.platforms.base import resolve_channel_prompt
+        # Per-channel ephemeral prompt/model binding
+        from gateway.platforms.base import resolve_channel_model_binding, resolve_channel_prompt
         _channel_prompt = resolve_channel_prompt(
             self.config.extra, channel_id, None,
+        )
+        _channel_model_binding = resolve_channel_model_binding(
+            self.config.extra,
+            thread_id or channel_id,
+            channel_id if thread_id else None,
         )
 
         msg_event = MessageEvent(
@@ -942,6 +947,7 @@ class MattermostAdapter(BasePlatformAdapter):
             media_urls=media_urls if media_urls else None,
             media_types=media_types if media_types else None,
             channel_prompt=_channel_prompt,
+            channel_model_binding=_channel_model_binding,
         )
 
         await self.handle_message(msg_event)

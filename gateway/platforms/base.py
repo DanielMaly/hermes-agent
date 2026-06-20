@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
+_MISSING = object()
 
 # Audio file extensions Hermes recognizes for native audio delivery.
 # Kept in sync with tools/send_message_tool.py and cron/scheduler.py via
@@ -1463,6 +1464,11 @@ class MessageEvent:
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
 
+    # Per-channel model binding resolved by the platform adapter (e.g.
+    # platform channel_model_bindings). Applied as the default runtime for
+    # this session unless /model has set a session-scoped override.
+    channel_model_binding: Optional[dict[str, str]] = None
+
     # Channel context recovered by history backfill (e.g. messages between
     # bot turns that were missed due to require_mention).  Kept separate
     # from ``text`` so the sender-prefix logic in run.py can operate on the
@@ -1726,6 +1732,76 @@ def resolve_channel_prompt(
         prompt = str(prompt).strip()
         if prompt:
             return prompt
+    return None
+
+
+def _coerce_channel_model_binding(value: Any) -> dict[str, str] | None:
+    """Normalize a channel model binding value from YAML/platform config."""
+    if isinstance(value, str):
+        model = value.strip()
+        return {"model": model} if model else None
+    if not isinstance(value, dict):
+        return None
+
+    allowed_keys = {"model", "provider", "base_url", "api_mode"}
+    binding: dict[str, str] = {}
+    for key in allowed_keys:
+        raw = value.get(key)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            binding[key] = text
+    return binding if binding.get("model") or binding.get("provider") else None
+
+
+def resolve_channel_model_binding(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> dict[str, str] | None:
+    """Resolve a per-channel model binding from platform config.
+
+    Looks up ``channel_model_bindings`` in the adapter's ``config.extra`` dict.
+    Prefers an exact match on *channel_id*; falls back to *parent_id* so
+    forum/thread/topic children inherit parent-channel defaults.
+
+    Supported config format::
+
+        channel_model_bindings:
+          "1234567890":
+            provider: openrouter
+            model: openrouter/auto
+          "9876543210": anthropic/claude-sonnet-4
+
+    Returns a normalized binding dict, or None if no usable binding exists.
+    """
+    bindings = config_extra.get("channel_model_bindings", _MISSING)
+    if bindings is _MISSING or bindings is None:
+        return None
+    if not isinstance(bindings, dict):
+        logger.warning(
+            "Ignoring malformed channel_model_bindings config: expected mapping, got %s",
+            type(bindings).__name__,
+        )
+        return None
+
+    for key in (channel_id, parent_id):
+        if not key:
+            continue
+        binding_key = str(key)
+        raw_binding = bindings.get(binding_key, _MISSING)
+        if raw_binding is _MISSING:
+            continue
+        binding = _coerce_channel_model_binding(raw_binding)
+        if binding:
+            return binding
+        logger.warning(
+            "Ignoring malformed channel_model_bindings entry for channel %s: "
+            "expected non-empty model string or mapping with model/provider, got %s",
+            binding_key,
+            type(raw_binding).__name__,
+        )
     return None
 
 
