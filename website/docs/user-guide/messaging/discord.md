@@ -316,6 +316,7 @@ discord:
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
   channel_prompts: {}             # Per-channel ephemeral system prompts
+  channel_model_bindings: {}      # Per-channel model/provider bindings
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
     roles: false                  # @role pings (default: false)
@@ -442,6 +443,35 @@ Behavior:
 - Exact thread/channel ID matches win.
 - If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
+
+#### `discord.channel_model_bindings`
+
+**Type:** mapping — **Default:** `{}`
+
+Per-channel model/provider bindings that choose the default model runtime for matching Discord channels or threads. This same `channel_model_bindings` shape is also supported by Slack, Telegram, and Mattermost. This is durable config: unlike `/model`, it survives `/reset` and gateway restarts. An explicit session-scoped `/model` switch still takes precedence until that session is reset.
+
+```yaml
+discord:
+  channel_model_bindings:
+    "1234567890":
+      provider: openrouter
+      model: openrouter/auto
+    "9876543210":
+      provider: anthropic
+      model: claude-sonnet-4-6
+    "5555555555": openrouter/auto  # shorthand for model-only binding
+```
+
+Supported fields:
+- `model`: model ID passed to the provider.
+- `provider`: provider slug (for example `openrouter`, `anthropic`, `openai-codex`, or `custom:<name>`). Credentials are resolved through the normal Hermes auth/env/config paths; do not put API keys here.
+- `base_url`: optional provider base URL override.
+- `api_mode`: optional API mode override.
+
+Behavior:
+- Exact thread/channel ID matches win.
+- If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
+- Session-scoped `/model` overrides win over channel bindings. `/new`, `/reset`, auto-reset, or gateway restart clears the session override, revealing the channel binding again.
 
 #### `discord.history_backfill`
 
