@@ -1109,6 +1109,11 @@ class GatewaySlashCommandsMixin:
             current_provider = override.get("provider", current_provider)
             current_base_url = override.get("base_url", current_base_url)
             current_api_key = override.get("api_key", current_api_key)
+        elif isinstance(getattr(event, "channel_model_binding", None), dict):
+            channel_binding = event.channel_model_binding or {}
+            current_model = channel_binding.get("model") or current_model
+            current_provider = channel_binding.get("provider") or current_provider
+            current_base_url = channel_binding.get("base_url") or current_base_url
 
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
@@ -1751,6 +1756,7 @@ class GatewaySlashCommandsMixin:
             source=source,
             raw_message=event.raw_message,
             channel_prompt=event.channel_prompt,
+            channel_model_binding=event.channel_model_binding,
         )
         
         # Let the normal message handler process it
