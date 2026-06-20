@@ -1503,6 +1503,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if not body.startswith(_OWNER_REPLY_PREFIX):
                     body = f"{_OWNER_REPLY_PREFIX}{body}"
 
+            # Per-channel model binding
+            from gateway.platforms.base import resolve_channel_model_binding
+            _channel_model_binding = resolve_channel_model_binding(
+                self.config.extra,
+                str(data.get("chatId", "")),
+                None,
+            )
+
             return MessageEvent(
                 text=body,
                 message_type=msg_type,
@@ -1516,6 +1524,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 reply_to_text=reply_to_text,
                 reply_to_author_id=reply_to_author_id,
                 reply_to_is_own_message=reply_to_is_own_message,
+                channel_model_binding=_channel_model_binding,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
