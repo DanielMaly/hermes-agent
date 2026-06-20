@@ -7089,10 +7089,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     except Exception:
                         reply_to_text = None
 
-        # Per-channel/topic ephemeral prompt
-        from gateway.platforms.base import resolve_channel_prompt
+        # Per-channel/topic ephemeral prompt/model binding
+        from gateway.platforms.base import resolve_channel_model_binding, resolve_channel_prompt
         _chat_id_str = str(chat.id)
         _channel_prompt = resolve_channel_prompt(
+            self.config.extra,
+            thread_id_str or _chat_id_str,
+            _chat_id_str if thread_id_str else None,
+        )
+        _channel_model_binding = resolve_channel_model_binding(
             self.config.extra,
             thread_id_str or _chat_id_str,
             _chat_id_str if thread_id_str else None,
@@ -7109,6 +7114,7 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
+            channel_model_binding=_channel_model_binding,
             timestamp=message.date,
         )
 
