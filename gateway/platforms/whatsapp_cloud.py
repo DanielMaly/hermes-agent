@@ -1978,6 +1978,14 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if body:
                 rich_sent_store.record(chat_id, wamid, body)
 
+        # Per-channel model binding
+        from gateway.platforms.base import resolve_channel_model_binding
+        _channel_model_binding = resolve_channel_model_binding(
+            self.config.extra,
+            str(chat_id),
+            None,
+        )
+
         return MessageEvent(
             text=body,
             message_type=message_type,
@@ -1989,4 +1997,5 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             reply_to_is_own_message=reply_to_is_own,
             media_urls=media_urls,
             media_types=media_types,
+            channel_model_binding=_channel_model_binding,
         )
