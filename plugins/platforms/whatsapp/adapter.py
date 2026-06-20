@@ -1268,6 +1268,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         except Exception as e:
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
+            # Per-channel model binding
+            from gateway.platforms.base import resolve_channel_model_binding
+            _channel_model_binding = resolve_channel_model_binding(
+                self.config.extra,
+                str(data.get("chatId", "")),
+                None,
+            )
+
             return MessageEvent(
                 text=body,
                 message_type=msg_type,
@@ -1276,6 +1284,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                channel_model_binding=_channel_model_binding,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
