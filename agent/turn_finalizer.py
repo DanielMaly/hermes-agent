@@ -25,45 +25,6 @@ from __future__ import annotations
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
-from agent.message_content import flatten_message_text
-
-
-def _is_pure_tool_call_tail(msg: dict) -> bool:
-    """An assistant row with ``tool_calls`` but no visible text content of its own.
-
-    Such a row satisfies the role check (``tail role == "assistant"``) while
-    carrying none of the delivered answer — see the #43849/#44100 invariant
-    block in :func:`finalize_turn`. Uses :func:`flatten_message_text` so that
-    multimodal (list-type) content is evaluated by its text parts, not just
-    its type.
-    """
-    if not msg.get("tool_calls"):
-        return False
-    return not flatten_message_text(msg.get("content")).strip()
-
-
-# Verification continuation scaffolding flags: verify-on-stop / pre_verify
-# inject a synthetic user nudge to keep the agent going one more turn.
-# These nudges must be stripped from returned/live history to avoid
-# role-alternation breaks and poisoning the resumed transcript. The
-# assistant response is real content and is not flagged. (#65919 §7)
-_VERIFICATION_CONTINUATION_FLAGS = (
-    "_verification_stop_synthetic",
-    "_pre_verify_synthetic",
-)
-
-
-def _drop_verification_continuation_scaffolding(messages) -> None:
-    """Remove verification-continuation nudge messages from *messages* in place.
-
-    Only the synthetic nudges carry these flags, so this strips just the
-    nudges while preserving the real attempted-final-answer that was
-    persisted to state.db.
-    """
-    messages[:] = [
-        m for m in messages
-        if not (isinstance(m, dict) and any(m.get(f) for f in _VERIFICATION_CONTINUATION_FLAGS))
-    ]
 
 
 def finalize_turn(
@@ -81,8 +42,6 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
-    _pending_verification_response=None,
-    _pending_verification_response_previewed=False,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
 
@@ -91,40 +50,10 @@ def finalize_turn(
     """
     from agent.conversation_loop import logger
 
-    budget_exhausted = (
+    if final_response is None and (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
-    )
-    budget_fallback_eligible = (
-        budget_exhausted
-        and not interrupted
-        and not failed
-        and str(_turn_exit_reason) in {"unknown", "budget_exhausted"}
-    )
-    continuation_budget_exhausted = (
-        final_response is None
-        and bool(_pending_verification_response)
-        and budget_fallback_eligible
-    )
-
-    iteration_limit_fallback = False
-    preserved_verification_fallback = False
-    if continuation_budget_exhausted:
-        # A verification/continuation gate deliberately withheld a composed
-        # answer, then consumed the remaining budget before producing a newer
-        # one. Preserve that exact answer instead of replacing it with another
-        # fallible model call. The explicit pending value is the provenance
-        # guard: unrelated error/recovery exits can never enter this branch.
-        final_response = _pending_verification_response
-        # Mark the turn as previewed only when the reused candidate was
-        # actually streamed to the user as interim content. (#65919 review:
-        # response-loss blocker)
-        if _pending_verification_response_previewed:
-            agent._response_was_previewed = True
-        _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
-        iteration_limit_fallback = True
-        preserved_verification_fallback = True
-    elif final_response is None and budget_fallback_eligible:
+    ):
         # Budget exhausted — ask the model for a summary via one extra
         # API call with tools stripped.  _handle_max_iterations injects a
         # user message and makes a single toolless request.
@@ -139,18 +68,21 @@ def finalize_turn(
                 "— requesting summary..."
             )
         final_response = agent._handle_max_iterations(messages, api_call_count)
-        iteration_limit_fallback = True
 
-    if iteration_limit_fallback:
-        # If running as a kanban worker, signal the dispatcher that the
-        # worker could not complete (rather than treating it as a
-        # protocol violation). This applies whether the user-facing fallback
-        # came from the summary call or an explicitly pending continuation;
-        # both exhausted the task budget and must advance the failure circuit.
+        # If running as a kanban worker, record the budget-exhausted
+        # failure so the dispatcher knows the worker could not complete
+        # (rather than leaving it as a protocol violation).  We use
+        # ``_record_task_failure(outcome="timed_out")`` rather than
+        # ``kanban_block`` so the failure counts toward the
+        # ``consecutive_failures`` counter and the dispatcher's
+        # ``failure_limit`` circuit breaker (#29747 gap 2).  Without
+        # this, a task whose worker keeps exhausting its budget would
+        # cycle silently each run with no signal.
         #
-        # We route through ``_record_task_failure(outcome="timed_out")``
-        # rather than ``kanban_block`` so this counts toward the dispatcher's
-        # consecutive-failure circuit breaker (#29747 gap 2).
+        # Tools are stripped before ``_handle_max_iterations`` (to get a
+        # clean toolless summary), so the model cannot call
+        # ``kanban_block`` / ``kanban_complete`` itself — we must close
+        # the run on its behalf.
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
         if _kanban_task:
             try:
@@ -173,10 +105,46 @@ def finalize_turn(
                             "budget_used": api_call_count,
                             "budget_max": agent.max_iterations,
                         },
+                        partial_summary=(
+                            final_response
+                            if final_response and final_response.strip()
+                            else None
+                        ),
                     )
+                    # Salvage the model's last output as a task comment so
+                    # the retry worker sees it in build_worker_context's
+                    # comment thread.  This is genuine model output, not
+                    # fabricated text — the [partial_unverified] tag marks
+                    # it as emergency-salvaged from a budget-exhausted run
+                    # so reviewers know it may be incomplete or inaccurate.
+                    if final_response and final_response.strip():
+                        _author = (
+                            os.environ.get("HERMES_PROFILE")
+                            or "worker"
+                        )
+                        try:
+                            _kb.add_comment(
+                                _conn, _kanban_task,
+                                author=_author,
+                                body=(
+                                    "⚠️ [partial_unverified — iteration "
+                                    "budget exhausted; this is the worker's "
+                                    "last model output before timeout, not "
+                                    "a deliberate handoff]\n\n"
+                                    + final_response
+                                ),
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Failed to write partial-findings comment "
+                                "for task %s", _kanban_task, exc_info=True,
+                            )
                     logger.info(
-                        "recorded budget-exhausted failure for task %s (%d/%d)",
+                        "recorded budget-exhausted failure for task %s "
+                        "(%d/%d) — partial summary %d chars %s",
                         _kanban_task, api_call_count, agent.max_iterations,
+                        len(final_response or ""),
+                        "salvaged" if final_response else "empty",
                     )
                 finally:
                     try:
@@ -266,12 +234,6 @@ def finalize_turn(
     try:
         agent._drop_trailing_empty_response_scaffolding(messages)
 
-        # Drop verification-continuation nudges (synthetic user messages)
-        # from the live history before the tail-assistant check — only the
-        # nudges need stripping; the assistant candidate persists in
-        # state.db. (#65919 §7)
-        _drop_verification_continuation_scaffolding(messages)
-
         # When the turn was interrupted and the last message is a tool
         # result, append a synthetic assistant message to close the
         # tool-call sequence. Without this, the session persists a
@@ -301,54 +263,14 @@ def finalize_turn(
         # single chokepoint every recovery ``break`` flows through, so the
         # invariant "delivered final_response ⇒ assistant row in transcript"
         # holds regardless of which path produced it. (#43849 / #44100)
-        #
-        # Compare content (not just role) so a verification candidate that
-        # matches the final response is not duplicated at budget
-        # exhaustion. (#65919 §7)
         if final_response and not interrupted:
             try:
-                _tail = messages[-1] if messages else None
+                _tail_role = messages[-1].get("role") if messages else None
             except Exception:
-                _tail = None
-            _tail_role = _tail.get("role") if isinstance(_tail, dict) else None
+                _tail_role = None
             if _tail_role != "assistant":
-                # Tail is not an assistant row — append the final response
-                # so the durable turn closes with the answer (#43849/#44100).
                 messages.append({"role": "assistant", "content": final_response})
-            elif isinstance(_tail, dict) and _tail.get("content") != final_response and _is_pure_tool_call_tail(_tail):
-                # The tail IS an assistant row, but a *pure tool-call turn*:
-                # tool_calls with no text of its own. The role check alone
-                # leaves the #43849/#44100 invariant unmet — the user saw a
-                # response that never reached the transcript, and the next turn
-                # replays the user backlog and re-answers it (the very symptom
-                # this block was added for). Fill that row's empty content
-                # instead of appending, so the durable turn ends with the answer
-                # without disturbing the tool-call structure or creating an
-                # assistant→assistant pair.
-                #
-                # The ``content != final_response`` guard prevents filling when
-                # the tail already carries the final response text (verification
-                # candidate collapse — the provisional answer was persisted and
-                # reused as the terminal response, #65919 §7).
-                _tail["content"] = final_response
-                # The row may have already been flushed to SQLite by the
-                # incremental tool-call persist (conversation_loop.py:4990),
-                # which stamps ``_DB_PERSISTED_MARKER`` so subsequent flushes
-                # skip it. Pop the marker so the next ``_persist_session``
-                # re-writes the filled content to the durable store —
-                # otherwise ``/resume`` reloads ``content=""`` and the bug
-                # resurfaces cross-session.
-                _tail.pop("_db_persisted", None)
 
-        # The model has completed its request, so replace API-local
-        # voice/model/skill guidance with the clean user input before writing the
-        # final durable snapshot and returning the continuation history. Earlier
-        # turn-start flushes use the DB-only override because their messages are
-        # still needed for the API request; this finalizer runs after that request
-        # is complete (#48677 / #63766).
-        _apply_override = getattr(agent, "_apply_persist_user_message_override", None)
-        if callable(_apply_override):
-            _apply_override(messages)
         agent._persist_session(messages, conversation_history)
     except Exception as _persist_err:
         _cleanup_errors.append(f"persist_session: {_persist_err}")
@@ -449,7 +371,6 @@ def finalize_turn(
                 # truncated partial (the "The" case from #34452).
                 _is_partial_fragment = (
                     not _is_empty_terminal
-                    and not preserved_verification_fallback
                     and not str(_turn_exit_reason).startswith("text_response")
                     and len(_stripped) <= 24
                     and _stripped[-1:] not in {".", "!", "?", "。", "！", "？", "`", ")"}
