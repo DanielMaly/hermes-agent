@@ -42,7 +42,6 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
-    _pending_verification_response=None,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
 
@@ -51,35 +50,10 @@ def finalize_turn(
     """
     from agent.conversation_loop import logger
 
-    budget_exhausted = (
+    if final_response is None and (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
-    )
-    budget_fallback_eligible = (
-        budget_exhausted
-        and not interrupted
-        and not failed
-        and str(_turn_exit_reason) in {"unknown", "budget_exhausted"}
-    )
-    continuation_budget_exhausted = (
-        final_response is None
-        and bool(_pending_verification_response)
-        and budget_fallback_eligible
-    )
-
-    iteration_limit_fallback = False
-    preserved_verification_fallback = False
-    if continuation_budget_exhausted:
-        # A verification/continuation gate deliberately withheld a composed
-        # answer, then consumed the remaining budget before producing a newer
-        # one. Preserve that exact answer instead of replacing it with another
-        # fallible model call. The explicit pending value is the provenance
-        # guard: unrelated error/recovery exits can never enter this branch.
-        final_response = _pending_verification_response
-        _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
-        iteration_limit_fallback = True
-        preserved_verification_fallback = True
-    elif final_response is None and budget_fallback_eligible:
+    ):
         # Budget exhausted — ask the model for a summary via one extra
         # API call with tools stripped.  _handle_max_iterations injects a
         # user message and makes a single toolless request.
@@ -94,18 +68,21 @@ def finalize_turn(
                 "— requesting summary..."
             )
         final_response = agent._handle_max_iterations(messages, api_call_count)
-        iteration_limit_fallback = True
 
-    if iteration_limit_fallback:
-        # If running as a kanban worker, signal the dispatcher that the
-        # worker could not complete (rather than treating it as a
-        # protocol violation). This applies whether the user-facing fallback
-        # came from the summary call or an explicitly pending continuation;
-        # both exhausted the task budget and must advance the failure circuit.
+        # If running as a kanban worker, record the budget-exhausted
+        # failure so the dispatcher knows the worker could not complete
+        # (rather than leaving it as a protocol violation).  We use
+        # ``_record_task_failure(outcome="timed_out")`` rather than
+        # ``kanban_block`` so the failure counts toward the
+        # ``consecutive_failures`` counter and the dispatcher's
+        # ``failure_limit`` circuit breaker (#29747 gap 2).  Without
+        # this, a task whose worker keeps exhausting its budget would
+        # cycle silently each run with no signal.
         #
-        # We route through ``_record_task_failure(outcome="timed_out")``
-        # rather than ``kanban_block`` so this counts toward the dispatcher's
-        # consecutive-failure circuit breaker (#29747 gap 2).
+        # Tools are stripped before ``_handle_max_iterations`` (to get a
+        # clean toolless summary), so the model cannot call
+        # ``kanban_block`` / ``kanban_complete`` itself — we must close
+        # the run on its behalf.
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
         if _kanban_task:
             try:
@@ -128,10 +105,46 @@ def finalize_turn(
                             "budget_used": api_call_count,
                             "budget_max": agent.max_iterations,
                         },
+                        partial_summary=(
+                            final_response
+                            if final_response and final_response.strip()
+                            else None
+                        ),
                     )
+                    # Salvage the model's last output as a task comment so
+                    # the retry worker sees it in build_worker_context's
+                    # comment thread.  This is genuine model output, not
+                    # fabricated text — the [partial_unverified] tag marks
+                    # it as emergency-salvaged from a budget-exhausted run
+                    # so reviewers know it may be incomplete or inaccurate.
+                    if final_response and final_response.strip():
+                        _author = (
+                            os.environ.get("HERMES_PROFILE")
+                            or "worker"
+                        )
+                        try:
+                            _kb.add_comment(
+                                _conn, _kanban_task,
+                                author=_author,
+                                body=(
+                                    "⚠️ [partial_unverified — iteration "
+                                    "budget exhausted; this is the worker's "
+                                    "last model output before timeout, not "
+                                    "a deliberate handoff]\n\n"
+                                    + final_response
+                                ),
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Failed to write partial-findings comment "
+                                "for task %s", _kanban_task, exc_info=True,
+                            )
                     logger.info(
-                        "recorded budget-exhausted failure for task %s (%d/%d)",
+                        "recorded budget-exhausted failure for task %s "
+                        "(%d/%d) — partial summary %d chars %s",
                         _kanban_task, api_call_count, agent.max_iterations,
+                        len(final_response or ""),
+                        "salvaged" if final_response else "empty",
                     )
                 finally:
                     try:
@@ -328,7 +341,6 @@ def finalize_turn(
                 # truncated partial (the "The" case from #34452).
                 _is_partial_fragment = (
                     not _is_empty_terminal
-                    and not preserved_verification_fallback
                     and not str(_turn_exit_reason).startswith("text_response")
                     and len(_stripped) <= 24
                     and _stripped[-1:] not in {".", "!", "?", "。", "！", "？", "`", ")"}
