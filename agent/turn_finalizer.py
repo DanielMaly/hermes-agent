@@ -42,6 +42,7 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
+    _pending_verification_response=None,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
 
@@ -50,10 +51,35 @@ def finalize_turn(
     """
     from agent.conversation_loop import logger
 
-    if final_response is None and (
+    budget_exhausted = (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
-    ):
+    )
+    budget_fallback_eligible = (
+        budget_exhausted
+        and not interrupted
+        and not failed
+        and str(_turn_exit_reason) in {"unknown", "budget_exhausted"}
+    )
+    continuation_budget_exhausted = (
+        final_response is None
+        and bool(_pending_verification_response)
+        and budget_fallback_eligible
+    )
+
+    iteration_limit_fallback = False
+    preserved_verification_fallback = False
+    if continuation_budget_exhausted:
+        # A verification/continuation gate deliberately withheld a composed
+        # answer, then consumed the remaining budget before producing a newer
+        # one. Preserve that exact answer instead of replacing it with another
+        # fallible model call. The explicit pending value is the provenance
+        # guard: unrelated error/recovery exits can never enter this branch.
+        final_response = _pending_verification_response
+        _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
+        iteration_limit_fallback = True
+        preserved_verification_fallback = True
+    elif final_response is None and budget_fallback_eligible:
         # Budget exhausted — ask the model for a summary via one extra
         # API call with tools stripped.  _handle_max_iterations injects a
         # user message and makes a single toolless request.
@@ -68,16 +94,18 @@ def finalize_turn(
                 "— requesting summary..."
             )
         final_response = agent._handle_max_iterations(messages, api_call_count)
+        iteration_limit_fallback = True
 
-        # If running as a kanban worker, record the budget-exhausted
-        # failure so the dispatcher knows the worker could not complete
-        # (rather than leaving it as a protocol violation).  We use
-        # ``_record_task_failure(outcome="timed_out")`` rather than
-        # ``kanban_block`` so the failure counts toward the
-        # ``consecutive_failures`` counter and the dispatcher's
-        # ``failure_limit`` circuit breaker (#29747 gap 2).  Without
-        # this, a task whose worker keeps exhausting its budget would
-        # cycle silently each run with no signal.
+    if iteration_limit_fallback:
+        # If running as a kanban worker, signal the dispatcher that the
+        # worker could not complete (rather than treating it as a
+        # protocol violation). This applies whether the user-facing fallback
+        # came from the summary call or an explicitly pending continuation;
+        # both exhausted the task budget and must advance the failure circuit.
+        #
+        # We route through ``_record_task_failure(outcome="timed_out")``
+        # rather than ``kanban_block`` so this counts toward the dispatcher's
+        # consecutive-failure circuit breaker (#29747 gap 2).
         #
         # Tools are stripped before ``_handle_max_iterations`` (to get a
         # clean toolless summary), so the model cannot call
@@ -350,7 +378,7 @@ def finalize_turn(
                 )
                 if (
                     _is_empty_terminal
-                    or _is_partial_fragment
+                    or (_is_partial_fragment and not preserved_verification_fallback)
                     or _is_partial_stream_recovery
                 ):
                     _explanation = agent._format_turn_completion_explanation(
