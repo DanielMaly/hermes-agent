@@ -95,20 +95,28 @@ class TestBaseContextConfigParsing:
         assert cfg.base_context_user_include_observations is False
         assert cfg.base_context_user_include_peer_card is True
 
-    def test_host_block_overrides_root_per_leaf(self, tmp_path):
+    def test_host_block_camel_case_overrides_root(self, tmp_path):
+        """Host-level camelCase baseContext overrides root snake_case per leaf.
+
+        The parser accepts both camelCase and snake_case at every level
+        (root and host).  This test covers the host-level camelCase path
+        so the 'accepted everywhere' contract is exercised distinctly from
+        the snake_case host override test above.
+        """
         config_path = tmp_path / "honcho.json"
         config_path.write_text(json.dumps({
             "apiKey": "test-key",
-            "base_context": {
-                "user_representation": {
-                    "include_observations": False,
-                    "include_peer_card": False,
+            "baseContext": {
+                "includeSessionSummary": False,
+                "aiRepresentation": {
+                    "includeObservations": False,
+                    "includePeerCard": False,
                 },
             },
             "hosts": {
                 "hermes": {
-                    "base_context": {
-                        "user_representation": {"include_peer_card": True}
+                    "baseContext": {
+                        "aiRepresentation": {"includePeerCard": True}
                     }
                 }
             },
@@ -116,8 +124,9 @@ class TestBaseContextConfigParsing:
 
         cfg = HonchoClientConfig.from_global_config(config_path=config_path)
 
-        assert cfg.base_context_user_include_observations is False
-        assert cfg.base_context_user_include_peer_card is True
+        assert cfg.base_context_include_session_summary is False
+        assert cfg.base_context_ai_include_observations is False
+        assert cfg.base_context_ai_include_peer_card is True
 
 
 class TestBaseContextFetchGates:
