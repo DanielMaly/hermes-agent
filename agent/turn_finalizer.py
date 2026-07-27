@@ -70,6 +70,7 @@ def _record_kanban_budget_exhausted(
     api_call_count: int,
     max_iterations: int,
     logger: logging.Logger,
+    partial_summary: str | None = None,
 ) -> None:
     """Record a terminal ``timed_out`` outcome for a kanban worker that
     exhausted its iteration budget.
@@ -99,7 +100,31 @@ def _record_kanban_budget_exhausted(
                     "budget_used": api_call_count,
                     "budget_max": max_iterations,
                 },
+                partial_summary=(
+                    partial_summary
+                    if partial_summary and partial_summary.strip()
+                    else None
+                ),
             )
+            if partial_summary and partial_summary.strip():
+                _author = os.environ.get("HERMES_PROFILE") or "worker"
+                try:
+                    _kb.add_comment(
+                        _conn,
+                        kanban_task,
+                        author=_author,
+                        body=(
+                            "⚠️ [partial_unverified — iteration budget exhausted; "
+                            "this is the worker's last model output before timeout, "
+                            "not a deliberate handoff]\n\n" + partial_summary
+                        ),
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to write partial-findings comment for task %s",
+                        kanban_task,
+                        exc_info=True,
+                    )
         finally:
             try:
                 _conn.close()
@@ -220,10 +245,16 @@ def finalize_turn(
         # We route through ``_record_task_failure(outcome="timed_out")``
         # rather than ``kanban_block`` so this counts toward the dispatcher's
         # consecutive-failure circuit breaker (#29747 gap 2).
+        #
+        # Tools are stripped before ``_handle_max_iterations`` (to get a
+        # clean toolless summary), so the model cannot call
+        # ``kanban_block`` / ``kanban_complete`` itself — we must close
+        # the run on its behalf.
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
         if _kanban_task:
             _record_kanban_budget_exhausted(
                 _kanban_task, api_call_count, agent.max_iterations, logger,
+                partial_summary=final_response,
             )
     elif budget_exhausted:
         # Bounded fallback (#87096): budget was exhausted but none of the
@@ -238,6 +269,7 @@ def finalize_turn(
         if _kanban_task:
             _record_kanban_budget_exhausted(
                 _kanban_task, api_call_count, agent.max_iterations, logger,
+                partial_summary=final_response,
             )
 
     # Determine if conversation completed successfully
@@ -362,10 +394,9 @@ def finalize_turn(
         # end at a tool/user message even though the caller — and the gateway
         # platform — already saw a completed assistant response. The next turn
         # then replays a user-only backlog and the model re-answers every
-        # "unanswered" message. Close the durable turn at the source, at the
-        # single chokepoint every recovery ``break`` flows through, so the
-        # invariant "delivered final_response ⇒ assistant row in transcript"
-        # holds regardless of which path produced it. (#43849 / #44100)
+        # turn from scratch (the #43849 / #44100 symptom). Append a final
+        # assistant row so the transcript ends with the actual delivered
+        # answer.
         #
         # Compare content (not just role) so a verification candidate that
         # matches the final response is not duplicated at budget
@@ -578,7 +609,6 @@ def finalize_turn(
                 # truncated partial (the "The" case from #34452).
                 _is_partial_fragment = (
                     not _is_empty_terminal
-                    and not preserved_verification_fallback
                     and not str(_turn_exit_reason).startswith("text_response")
                     and len(_stripped) <= 24
                     and _stripped[-1:] not in {".", "!", "?", "。", "！", "？", "`", ")"}
@@ -588,7 +618,7 @@ def finalize_turn(
                 )
                 if (
                     _is_empty_terminal
-                    or _is_partial_fragment
+                    or (_is_partial_fragment and not preserved_verification_fallback)
                     or _is_partial_stream_recovery
                 ):
                     _explanation = agent._format_turn_completion_explanation(
