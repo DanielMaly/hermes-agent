@@ -172,6 +172,7 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
     conn = SimpleNamespace(close=lambda: None)
     monkeypatch.setattr("hermes_cli.kanban_db.connect", lambda: conn)
     monkeypatch.setattr("hermes_cli.kanban_db._record_task_failure", record)
+    monkeypatch.setattr("hermes_cli.kanban_db.add_comment", lambda *_a, **_kw: None)
     agent = _LimitAgent()
 
     result = _finalize(
@@ -193,6 +194,7 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
         release_claim=True,
         end_run=True,
         event_payload_extra={"budget_used": 60, "budget_max": 60},
+        partial_summary="composed report",
     )
 
 
