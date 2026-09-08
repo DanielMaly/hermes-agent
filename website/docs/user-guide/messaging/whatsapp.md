@@ -238,6 +238,31 @@ gateway:
 
 Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables batching).
 
+## Per-Channel Model Bindings
+
+WhatsApp supports `channel_model_bindings` — durable per-chat model/provider defaults keyed by WhatsApp JID. This is the same mechanism used by Discord, Slack, Telegram, and Mattermost.
+
+```yaml
+whatsapp:
+  channel_model_bindings:
+    # DM — use a cheaper model for personal chats
+    "420777123456@s.whatsapp.net":
+      provider: openrouter
+      model: openrouter/auto
+    # Group — use a stronger model for group discussions
+    "120363000000000000@g.us":
+      provider: anthropic
+      model: claude-sonnet-4-6
+    # Shorthand: model-only binding (uses global provider)
+    "420999888777@s.whatsapp.net": openrouter/auto
+```
+
+WhatsApp JIDs are:
+- `@s.whatsapp.net` for direct messages (e.g. `420777123456@s.whatsapp.net`)
+- `@g.us` for group chats (e.g. `120363000000000000@g.us`)
+
+Unlike Discord/Telegram, WhatsApp has no threads — bindings are flat per-chat. Session-scoped `/model` overrides still take precedence over channel bindings; `/new`, `/reset`, or gateway restart clears the override and reveals the channel binding again.
+
 ---
 
 ## Troubleshooting
