@@ -256,6 +256,31 @@ Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables
 
 Replying to (quoting) an earlier message gives the agent the quoted text as context. Quoting an image, voice note, video or document also attaches that file to the turn, so "what is this?" under a quoted image works — whether the attachment came from another person or from the bot itself (a cron-delivered chart, a generated image). WhatsApp only ships a thumbnail stub with a quote, so the file is resolved from the bridge's download cache (inbound media, in-memory for the bridge's lifetime) or from a local index of the bot's own sends (last 1000 messages); quotes of anything older arrive without the attachment.
 
+## Per-Channel Model Bindings
+
+WhatsApp supports `channel_model_bindings` — durable per-chat model/provider defaults keyed by WhatsApp JID. This is the same mechanism used by Discord, Slack, Telegram, and Mattermost.
+
+```yaml
+whatsapp:
+  channel_model_bindings:
+    # DM — use a cheaper model for personal chats
+    "420777123456@s.whatsapp.net":
+      provider: openrouter
+      model: openrouter/auto
+    # Group — use a stronger model for group discussions
+    "120363000000000000@g.us":
+      provider: anthropic
+      model: claude-sonnet-4-6
+    # Shorthand: model-only binding (uses global provider)
+    "420999888777@s.whatsapp.net": openrouter/auto
+```
+
+WhatsApp JIDs are:
+- `@s.whatsapp.net` for direct messages (e.g. `420777123456@s.whatsapp.net`)
+- `@g.us` for group chats (e.g. `120363000000000000@g.us`)
+
+Unlike Discord/Telegram, WhatsApp has no threads — bindings are flat per-chat. Session-scoped `/model` overrides still take precedence over channel bindings; `/new`, `/reset`, or gateway restart clears the override and reveals the channel binding again.
+
 ---
 
 ## Troubleshooting
