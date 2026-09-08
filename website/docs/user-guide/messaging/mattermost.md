@@ -325,6 +325,24 @@ mattermost:
 
 Keys are Mattermost channel IDs (find them in the channel URL or via the API). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
 
+## Per-Channel Model Bindings
+
+Assign durable per-channel model/provider defaults. Every message in a bound channel runs on the bound model unless the user has set a session-scoped `/model` override (which always wins).
+
+```yaml
+mattermost:
+  channel_model_bindings:
+    "channel_id_abc123":
+      provider: openrouter
+      model: openrouter/auto
+    "channel_id_def456":
+      provider: anthropic
+      model: claude-sonnet-4-6
+    "channel_id_casual": openrouter/auto  # shorthand for model-only binding
+```
+
+Supported fields: `model`, `provider`, `base_url`, and `api_mode`. If only `provider` is set, Hermes uses that provider runtime's configured/default model. Thread-specific keys are checked first; otherwise Mattermost threads inherit their parent channel's binding.
+
 ## Security
 
 :::warning
