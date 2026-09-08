@@ -91,9 +91,37 @@ def _recover_or_remember_model(runner, skey, model):
 
 
 class GatewayTurnPrepareMixin:
+    def _resolve_source_channel_model_binding(
+        self, source: Optional[SessionSource],
+    ) -> Optional[dict[str, str]]:
+        """Best-effort channel binding lookup for synthetic platform events.
+
+        Normal adapter events carry the resolved binding on ``MessageEvent``.
+        Synthetic events such as goal continuations may only have a
+        ``SessionSource``; look up the same config here so durable channel
+        bindings still apply.
+        """
+        if not source or not source.platform:
+            return None
+        adapter = getattr(self, "adapters", {}).get(source.platform)
+        extra = getattr(getattr(adapter, "config", None), "extra", None)
+        if not isinstance(extra, dict):
+            return None
+        channel_id = str(source.thread_id or source.chat_id or "")
+        parent_id = str(source.parent_chat_id or "") or None
+        if not parent_id and source.thread_id and source.chat_id:
+            chat_id = str(source.chat_id)
+            if chat_id and chat_id != channel_id:
+                parent_id = chat_id
+        if not channel_id:
+            return None
+        from gateway.platforms.base import resolve_channel_model_binding
+        return resolve_channel_model_binding(extra, channel_id, parent_id)
+
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         user_config: Optional[dict] = None, fallback: bool = True,
+        channel_model_binding: Optional[dict[str, str]] = None,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
@@ -196,6 +224,41 @@ class GatewayTurnPrepareMixin:
 
         if override and skey:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)
+
+        from gateway.run import _resolve_channel_binding_runtime_kwargs
+        # --- Apply channel model binding (model/provider/base_url) ---
+        # Resolve a binding's whole route after channel overrides, never over /model.
+        channel_binding = channel_model_binding if isinstance(channel_model_binding, dict) else self._resolve_source_channel_model_binding(source)
+        if channel_binding and not override:
+            binding_runtime_model = str(runtime_model).strip() if runtime_model else ""
+            binding_runtime = _resolve_channel_binding_runtime_kwargs(channel_binding)
+            if binding_runtime:
+                runtime_kwargs = binding_runtime
+                binding_runtime_model = str(runtime_kwargs.pop("model", None) or "").strip()
+            binding_model = (channel_binding.get("model") or "").strip()
+            if not binding_model and binding_runtime_model:
+                binding_model = str(binding_runtime_model).strip()
+            if not binding_model and (channel_binding.get("provider") or "").strip():
+                try:
+                    from hermes_cli.models import get_default_model_for_provider
+                    binding_model = get_default_model_for_provider(
+                        (channel_binding.get("provider") or "").strip()
+                    ) or ""
+                except Exception:
+                    binding_model = ""
+            if binding_model:
+                logger.info(
+                    "Channel model binding applied: session=%s %s -> %s provider=%s",
+                    skey or "",
+                    model,
+                    binding_model,
+                    channel_binding.get("provider") or runtime_kwargs.get("provider"),
+                )
+                model = binding_model
+            for key in ("provider", "base_url", "api_mode"):
+                val = (channel_binding.get(key) or "").strip()
+                if val:
+                    runtime_kwargs[key] = val
 
         # Provider resolved but no model.default (`hermes auth add` without `hermes model`): use the
         # provider's first catalog model.
