@@ -112,6 +112,14 @@ class _ModelSwitchContext:
             self.current_base_url = override.get("base_url", self.current_base_url)
             self.current_api_key = override.get("api_key", self.current_api_key)
 
+    def apply_channel_binding(self, binding: dict) -> None:
+        """A channel model binding is the default route when no session override exists."""
+        if not binding:
+            return
+        self.current_model = binding.get("model") or self.current_model
+        self.current_provider = binding.get("provider") or self.current_provider
+        self.current_base_url = binding.get("base_url") or self.current_base_url
+
 
 
 def _model_provider_listing_lines(providers) -> list[str]:
@@ -546,6 +554,12 @@ class GatewayModelCommandsMixin:
             restore_snapshot=self._snapshot_session_model_override(session_key) if request.is_once else None,
         )
         ctx.read_config()
+        # A channel model binding is the default route for this channel; a session
+        # /model override always wins over it (apply_override below).
+        if not self._session_model_overrides.get(session_key, {}):
+            binding = getattr(event, "channel_model_binding", None)
+            if isinstance(binding, dict):
+                ctx.apply_channel_binding(binding)
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))
         if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)

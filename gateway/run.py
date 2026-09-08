@@ -2164,6 +2164,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     _reply_anchor_for_event,
     _terminal_sentinel_start,
+    resolve_channel_model_binding,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.restart import (
@@ -2308,6 +2309,39 @@ def _runtime_agent_kwargs(runtime: dict) -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
         "request_overrides": runtime.get("request_overrides")}
+
+
+def _resolve_channel_binding_runtime_kwargs(binding: dict[str, str]) -> dict:
+    """Resolve runtime credentials for a channel model binding's provider.
+
+    Unlike the global runtime resolver, an explicit channel provider should not
+    silently fall back to another provider when credentials are missing — that
+    would make the binding appear to work while using the wrong backend.
+    """
+    provider = (binding.get("provider") or "").strip()
+    base_url = (binding.get("base_url") or "").strip() or None
+    target_model = (binding.get("model") or "").strip() or None
+    if not provider:
+        return {}
+
+    from hermes_cli.runtime_provider import (
+        resolve_runtime_provider,
+        format_runtime_provider_error,
+    )
+    try:
+        runtime = resolve_runtime_provider(
+            requested=provider,
+            explicit_base_url=base_url,
+            target_model=target_model,
+        )
+    except Exception as exc:
+        raise RuntimeError(format_runtime_provider_error(exc)) from exc
+
+    kwargs = _runtime_agent_kwargs(runtime)
+    runtime_model = runtime.get("model")
+    if runtime_model:
+        kwargs["model"] = runtime_model
+    return kwargs
 
 
 @dataclasses.dataclass(frozen=True)

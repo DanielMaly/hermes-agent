@@ -189,6 +189,7 @@ from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 from gateway.whatsapp_identity import normalize_whatsapp_mention_jid, to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
+    resolve_channel_model_binding,
 )
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
@@ -906,6 +907,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 reply_to_text=str(data.get("quotedText") or "").strip() or None,
                 reply_to_author_id=(self._normalize_whatsapp_id(data.get("quotedParticipant")) or None) if quoted else None,
                 reply_to_is_own_message=self._message_is_reply_to_bot(data) if quoted else False,
+                channel_model_binding=resolve_channel_model_binding(
+                    self.config.extra, str(data.get("chatId") or ""), None),
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

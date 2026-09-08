@@ -1360,6 +1360,24 @@ Keys are chat IDs (groups/supergroups) or forum topic IDs. For forum groups, top
 
 Numeric YAML keys are automatically normalized to strings.
 
+## Per-Channel Model Bindings
+
+Assign durable per-chat/per-topic model/provider defaults. Every message in a bound chat or topic runs on the bound model unless the user has set a session-scoped `/model` override (which always wins).
+
+```yaml
+telegram:
+  channel_model_bindings:
+    "-1001234567890":
+      provider: openrouter
+      model: openrouter/auto
+    "42":
+      provider: anthropic
+      model: claude-sonnet-4-6
+    "99": openrouter/auto  # shorthand for model-only binding
+```
+
+Keys are chat IDs or forum topic IDs, matching `channel_prompts`. Topic-specific bindings win; topics without an explicit entry inherit the parent group binding. Supported fields: `model`, `provider`, `base_url`, and `api_mode`. If only `provider` is set, Hermes uses that provider runtime's configured/default model.
+
 ## Troubleshooting
 
 | Problem | Solution |

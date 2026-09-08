@@ -342,6 +342,8 @@ Details:
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
 
+A related mechanism, `channel_model_bindings`, binds a model/provider to a channel without a system prompt — see the per-platform docs (Discord, Slack, Telegram, Mattermost, WhatsApp). Both are overridden by a session-scoped `/model` switch.
+
 ## Security
 
 **By default, the gateway denies all users who are not in an allowlist or paired via DM.** This is the safe default for a bot with terminal access.
