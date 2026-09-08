@@ -43,17 +43,24 @@ def _assistant_row_missing_visible_text(msg: dict) -> bool:
 
 
 def _record_kanban_budget_exhausted(
-    kanban_task: str, api_call_count: int, max_iterations: int, logger: logging.Logger
+    kanban_task: str,
+    api_call_count: int,
+    max_iterations: int,
+    logger: logging.Logger,
+    partial_summary: str | None = None,
 ) -> None:
-    """Record a terminal ``timed_out`` outcome for a kanban worker out of budget.
+    """Record a terminal ``timed_out`` outcome for a kanban worker that
+    exhausted its iteration budget.
 
-    Routed via ``_record_task_failure`` (not ``kanban_block``) so it counts toward the
-    consecutive-failure circuit breaker. Idempotent via the ``_end_run`` CAS
+    ``partial_summary`` — when provided (e.g. the model's last text response
+    before budget exhaustion), it is written to the run row's ``summary`` field
+    so ``build_worker_context`` surfaces it to the retry worker.  This prevents
+    the failure mode where a worker discovers a root cause, hits the iteration
+    cap, and the retry starts from scratch with no partial findings.
+
+    Routed via ``_record_task_failure`` (not ``kanban_block``) so it counts toward
+    the consecutive-failure circuit breaker. Idempotent via the ``_end_run`` CAS
     (``WHERE ended_at IS NULL``), so safe from multiple exit paths.
-
-    This is a bounded fallback (#87096): the CAS invariant in ``_end_run`` (``WHERE ended_at IS NULL``)
-    guarantees idempotence — if another path already closed the run this is a no-op — so it is safe to call
-    from multiple exit paths.
     """
     try:
         from hermes_cli import kanban_db as _kb
@@ -71,8 +78,35 @@ def _record_kanban_budget_exhausted(
                 outcome="timed_out",
                 release_claim=True,
                 end_run=True,
-                event_payload_extra={"budget_used": api_call_count, "budget_max": max_iterations},
+                event_payload_extra={
+                    "budget_used": api_call_count,
+                    "budget_max": max_iterations,
+                },
+                partial_summary=(
+                    partial_summary
+                    if partial_summary and partial_summary.strip()
+                    else None
+                ),
             )
+            if partial_summary and partial_summary.strip():
+                _author = os.environ.get("HERMES_PROFILE") or "worker"
+                try:
+                    _kb.add_comment(
+                        _conn,
+                        kanban_task,
+                        author=_author,
+                        body=(
+                            "⚠️ [partial_unverified — iteration budget exhausted; "
+                            "this is the worker's last model output before timeout, "
+                            "not a deliberate handoff]\n\n" + partial_summary
+                        ),
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to write partial-findings comment for task %s",
+                        kanban_task,
+                        exc_info=True,
+                    )
         finally:
             with suppress(Exception):
                 _conn.close()
@@ -160,24 +194,17 @@ def _resolve_budget_fallback(
     # was eligible, so the dispatcher learns the worker could not complete. Only the
     # dispatcher-owned worker owns the task: an in-process delegate_task child or cron run
     # inherits ``HERMES_KANBAN_TASK`` via os.environ but exhausting ITS budget must not
-    # close the parent's run and release its claim (#112817).
+    # close the parent's run and release its claim (#112817). Tools are stripped before
+    # ``_handle_max_iterations``, so the model cannot close the run itself.
     _kanban_task = (
         os.environ.get("HERMES_KANBAN_TASK")
         if budget_exhausted and is_dispatcher_owned_worker_context() else None
     )
-    # If running as a kanban worker, signal the dispatcher that the worker could not complete (rather than
-    # treating it as a protocol violation). This applies whether the user-facing fallback came from the
-    # summary call or an explicitly pending continuation; both exhausted the task budget and must advance
-    # the failure circuit. We route through ``_record_task_failure(outcome="timed_out")`` rather than
-    # ``kanban_block`` so this counts toward the dispatcher's consecutive-failure circuit breaker (#29747
-    # gap 2).
-    # Bounded fallback (#87096): budget was exhausted but none of the normal fallback paths were eligible
-    # (interrupted / failed / anomalous exit_reason). If running as a kanban worker we must still record a
-    # terminal outcome so the task does not remain in an ambiguous lifecycle state. The worker's run is
-    # closed via ``_record_task_failure`` (compare-and-swap receipt path) which is a no-op if another path
-    # closed it — the CAS invariant in ``_end_run`` (``WHERE ended_at IS NULL``) guarantees idempotence.
     if _kanban_task:
-        _record_kanban_budget_exhausted(_kanban_task, api_call_count, agent.max_iterations, logger)
+        _record_kanban_budget_exhausted(
+            _kanban_task, api_call_count, agent.max_iterations, logger,
+            partial_summary=final_response,
+        )
     return final_response, _turn_exit_reason, preserved_verification_fallback
 
 
@@ -378,12 +405,11 @@ def _explain_abnormal_exit(agent, final_response, _turn_exit_reason, preserved_v
         # punctuation is treated as a truncated partial (#34452).
         _is_partial_fragment = (
             not _is_empty_terminal
-            and not preserved_verification_fallback
             and not str(_turn_exit_reason).startswith("text_response")
             and len(_stripped) <= 24
             and _stripped[-1:] not in _SENTENCE_END
         )
-        if _is_empty_terminal or _is_partial_fragment or str(_turn_exit_reason) == "partial_stream_recovery":
+        if _is_empty_terminal or (_is_partial_fragment and not preserved_verification_fallback) or str(_turn_exit_reason) == "partial_stream_recovery":
             _explanation = agent._format_turn_completion_explanation(
                 _turn_exit_reason, getattr(agent, "_last_persistence_error_cause", None),
                 db_path=getattr(getattr(agent, "_session_db", None), "db_path", None),
