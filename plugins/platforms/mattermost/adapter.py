@@ -597,11 +597,12 @@ class MattermostAdapter(BasePlatformAdapter):
             # A bot account's post carries props.from_bot (a string "true" on the wire).
             is_bot=str((post.get("props") or {}).get("from_bot", "")).lower() == "true"
             or self._is_configured_bot_user(sender_id))
-        from gateway.platforms.base import resolve_channel_prompt
+        from gateway.platforms.base import resolve_channel_prompt, resolve_channel_model_binding
         await self.handle_message(MessageEvent(
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,
             media_urls=media_urls, media_types=media_types,
-            channel_prompt=resolve_channel_prompt(self.config.extra, channel_id, None)))
+            channel_prompt=resolve_channel_prompt(self.config.extra, channel_id, None),
+            channel_model_binding=resolve_channel_model_binding(self.config.extra, channel_id, None)))
 
 
 # --- Plugin standalone-send (out-of-process cron delivery via Mattermost REST) ---
