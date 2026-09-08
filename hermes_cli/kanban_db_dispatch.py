@@ -1123,6 +1123,7 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    partial_summary: Optional[str] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1135,6 +1136,13 @@ def _record_task_failure(
     ``blocked`` + ``gave_up``). Threshold: per-task ``max_retries`` >
     ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``. ``force_trip`` trips
     unconditionally (caller applied its own bounded-retry policy).
+
+    ``partial_summary`` — when provided (e.g. the model's last
+    text response before budget exhaustion), it is written to the
+    run row's ``summary`` field so ``build_worker_context`` surfaces
+    it to the retry worker.  This prevents the failure mode where a
+    worker discovers a root cause, hits the iteration cap, and the
+    retry starts from scratch with no partial findings.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -1181,6 +1189,7 @@ def _record_task_failure(
                 run_id = _kb._end_run(
                     conn, task_id, outcome=outcome, status=outcome, error=error,
                     metadata={"failures": failures, "retry_status": retry_status},
+                    summary=partial_summary,
                 )
                 _kb._append_event(
                     conn, task_id, outcome,
@@ -1212,6 +1221,7 @@ def _record_task_failure(
             # Only the spawn path has an open run to close.
             run_id = _kb._end_run(
                 conn, task_id, outcome="gave_up", status="gave_up", error=error,
+                summary=partial_summary,
                 metadata={
                     "failures": failures,
                     "trigger_outcome": outcome,
