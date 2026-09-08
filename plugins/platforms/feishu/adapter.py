@@ -2474,6 +2474,7 @@ class FeishuAdapter(BasePlatformAdapter):
         synthetic_event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=raw_message,
             message_id=message_id, channel_prompt=self._resolve_channel_prompt(chat_id),
+            channel_model_binding=self._resolve_channel_model_binding(chat_id),
             timestamp=datetime.now(),
         )
         await self._handle_message_with_guards(synthetic_event)
@@ -2593,6 +2594,12 @@ class FeishuAdapter(BasePlatformAdapter):
         extra = getattr(getattr(self, "config", None), "extra", None) or {}  # tests build bare adapters
         return resolve_channel_prompt(extra, chat_id, parent_id)
 
+    def _resolve_channel_model_binding(self, chat_id: str, parent_id: str | None = None) -> dict[str, str] | None:
+        """Honour ``channel_model_bindings: {<chat_id>: {model: ...}}`` in PlatformConfig.extra."""
+        from gateway.platforms.base import resolve_channel_model_binding
+        extra = getattr(getattr(self, "config", None), "extra", None) or {}  # tests build bare adapters
+        return resolve_channel_model_binding(extra, chat_id, parent_id)
+
     async def _process_inbound_message(
         self, *, data: Any, message: Any, sender_id: Any, chat_type: str, message_id: str, is_bot: bool = False,
     ) -> None:
@@ -2649,6 +2656,7 @@ class FeishuAdapter(BasePlatformAdapter):
             media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_message_id, reply_to_text=reply_to_text,
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
+            channel_model_binding=self._resolve_channel_model_binding(chat_id, thread_id or None),
             timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)

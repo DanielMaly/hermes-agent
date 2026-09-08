@@ -39,7 +39,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
+from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, resolve_channel_model_binding, transcode_to_ogg_opus
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.helpers import bounded_put
 from gateway.platforms.event import MessageEvent, MessageType
@@ -1018,4 +1018,5 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             raw_message=raw_message, message_id=wamid, reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text, reply_to_is_own_message=reply_to_is_own,
             media_urls=media_urls, media_types=media_types, media_text_inlined=media_text_inlined,
+            channel_model_binding=resolve_channel_model_binding(self.config.extra, chat_id, None),
         )
