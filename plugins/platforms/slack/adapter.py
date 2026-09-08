@@ -50,7 +50,7 @@ from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
     is_host_excluded_by_no_proxy, resolve_proxy_url, ssrf_redirect_guard,
-    cache_document_from_bytes_async, cache_video_from_bytes_async,
+    cache_document_from_bytes_async, cache_video_from_bytes_async, resolve_channel_model_binding,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
@@ -4736,6 +4736,7 @@ class SlackAdapter(BasePlatformAdapter):
             media_text_inlined=media_text_inlined,
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
+            channel_model_binding=resolve_channel_model_binding(self.config.extra, channel_id, None),
             channel_context=channel_context,
             reply_expected=reply_expected,
             # thread_ts is the thread root, not an explicit reply (root is in channel_context).
@@ -6101,6 +6102,7 @@ class SlackAdapter(BasePlatformAdapter):
             message_type=(MessageType.COMMAND if text.startswith("/") else MessageType.TEXT),
             source=source, raw_message=command,
             channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
+            channel_model_binding=resolve_channel_model_binding(self.config.extra, channel_id, None),
             # Bound skills load only when a session starts; "/hermes <question>" can start one.
             auto_skill=resolve_channel_skills(self.config.extra, channel_id, None))
         # A slash turn is a human turn: it re-pins the channel prompt and session context, so it
