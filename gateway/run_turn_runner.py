@@ -1896,6 +1896,7 @@ class TurnRunner:
         try:
             model, runtime_kwargs = runner._resolve_session_agent_runtime(
                 source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
+                channel_model_binding=ctx.channel_model_binding,
             )
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",

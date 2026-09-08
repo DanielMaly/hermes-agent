@@ -504,6 +504,26 @@ Behavior:
 - If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
 
+#### `discord.channel_model_bindings`
+
+**Type:** mapping — **Default:** `{}`
+
+Per-channel model/provider defaults. Every message in a bound channel runs on the bound model unless the user has set a session-scoped `/model` override (which always wins). This is the same mechanism as `channel_prompts`, but for the model route instead of the system prompt.
+
+```yaml
+discord:
+  channel_model_bindings:
+    "1234567890":
+      provider: openrouter
+      model: openrouter/auto
+    "9876543210":
+      provider: anthropic
+      model: claude-sonnet-4-6
+    "5555555555": openrouter/auto  # shorthand for model-only binding
+```
+
+Supported fields: `model`, `provider`, `base_url`, and `api_mode`. If only `provider` is set, Hermes uses that provider runtime's configured/default model. Exact thread/channel ID matches win; threads without an explicit entry inherit their parent channel/forum binding. A session `/model` override takes precedence over the channel binding; `/new`, `/reset`, or a gateway restart clears the override and reveals the channel binding again.
+
 #### `discord.history_backfill`
 
 **Type:** boolean — **Default:** `true`
