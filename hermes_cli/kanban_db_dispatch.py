@@ -1345,6 +1345,7 @@ def _record_task_failure(
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
     infrastructure: bool = False,
+    partial_summary: Optional[str] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1363,6 +1364,11 @@ def _record_task_failure(
     with ``infrastructure: true`` but ``consecutive_failures`` is left alone and
     the breaker never trips; the card stays retryable and
     :func:`check_respawn_guard` spaces the retries.
+
+    ``partial_summary`` — when provided (e.g. the model's last
+    text response before budget exhaustion), it is written to the
+    run row's ``summary`` field so ``build_worker_context`` surfaces
+    it to the retry worker. This prevents retries starting from scratch.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -1410,7 +1416,8 @@ def _record_task_failure(
                 if infrastructure:
                     detail["infrastructure"] = True
                 run_id = _kb._end_run(
-                    conn, task_id, outcome=outcome, status=outcome, error=error, metadata=detail,
+                    conn, task_id, outcome=outcome, status=outcome, error=error,
+                    metadata=detail, summary=partial_summary,
                 )
                 _kb._append_event(conn, task_id, outcome, {"error": error, **detail}, run_id=run_id)
             return False
@@ -1438,6 +1445,7 @@ def _record_task_failure(
             # Only the spawn path has an open run to close.
             run_id = _kb._end_run(
                 conn, task_id, outcome="gave_up", status="gave_up", error=error,
+                summary=partial_summary,
                 metadata={
                     "failures": failures,
                     "trigger_outcome": outcome,
