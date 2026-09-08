@@ -77,6 +77,10 @@ class MessageEvent:
     auto_skill: Optional[str | list[str]] = None
     # Per-channel ephemeral system prompt; applied at API call time, never persisted to transcript.
     channel_prompt: Optional[str] = None
+    # Per-channel model binding resolved by the platform adapter (e.g.
+    # channel_model_bindings config). Applied as the default runtime for
+    # this session unless /model has set a session-scoped override.
+    channel_model_binding: Optional[dict[str, str]] = None
     # History-backfilled channel context (missed under require_mention); kept out of ``text`` so
     # run.py's sender-prefix logic sees only the trigger message.
     channel_context: Optional[str] = None
