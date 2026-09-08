@@ -1026,6 +1026,24 @@ slack:
 
 Keys are Slack channel IDs (find them via channel details → "About" → scroll to bottom). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
 
+## Per-Channel Model Bindings
+
+Assign durable per-channel model/provider defaults. Every message in a bound channel runs on the bound model unless the user has set a session-scoped `/model` override (which always wins).
+
+```yaml
+slack:
+  channel_model_bindings:
+    "C01RESEARCH":
+      provider: openrouter
+      model: openrouter/auto
+    "C02ENGINEERING":
+      provider: anthropic
+      model: claude-sonnet-4-6
+    "C03CASUAL": openrouter/auto  # shorthand for model-only binding
+```
+
+Supported fields: `model`, `provider`, `base_url`, and `api_mode`. If only `provider` is set, Hermes uses that provider runtime's configured/default model. Thread-specific keys are checked first; otherwise Slack threads inherit their parent channel's binding.
+
 ## Per-Channel Skill Bindings
 
 Auto-load a skill whenever a new session starts in a specific channel or DM. Unlike per-channel prompts (which are injected on every turn), skill bindings inject the skill content as a user message at **session start** — it becomes part of the conversation history and does not need to be reloaded on subsequent turns.
