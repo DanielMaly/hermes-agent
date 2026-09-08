@@ -46,7 +46,7 @@ from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
     is_host_excluded_by_no_proxy, resolve_proxy_url, safe_url_for_log, _ssrf_redirect_guard,
-    cache_document_from_bytes_async, cache_video_from_bytes_async,
+    cache_document_from_bytes_async, cache_video_from_bytes_async, resolve_channel_model_binding,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
@@ -4590,6 +4590,7 @@ class SlackAdapter(BasePlatformAdapter):
             media_text_inlined=media_text_inlined,
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
+            channel_model_binding=resolve_channel_model_binding(self.config.extra, channel_id, None),
             channel_context=channel_context,
             # thread_ts is the thread root, not an explicit reply (root is in channel_context).
             reply_to_text=None,
@@ -5907,7 +5908,8 @@ class SlackAdapter(BasePlatformAdapter):
         event = MessageEvent(
             text=text,
             message_type=(MessageType.COMMAND if text.startswith("/") else MessageType.TEXT),
-            source=source, raw_message=command)
+            source=source, raw_message=command,
+            channel_model_binding=resolve_channel_model_binding(self.config.extra, channel_id, None))
         # Stash response_url so the first reply for this channel+user goes ephemeral. COMMAND
         # events only: free-form "/hermes <question>" replies must stay public.
         response_url = command.get("response_url", "")

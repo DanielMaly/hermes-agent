@@ -166,17 +166,49 @@ def hygiene_no_commit_reason(agent) -> str:
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
+    def _resolve_source_channel_model_binding(
+        self, source: Optional[SessionSource],
+    ) -> Optional[dict[str, str]]:
+        """Best-effort channel binding lookup for synthetic platform events.
+
+        Normal adapter events carry the resolved binding on ``MessageEvent``.
+        Synthetic events such as goal continuations may only have a
+        ``SessionSource``; look up the same config here so durable channel
+        bindings still apply.
+        """
+        if not source or not source.platform:
+            return None
+        adapter = getattr(self, "adapters", {}).get(source.platform)
+        extra = getattr(getattr(adapter, "config", None), "extra", None)
+        if not isinstance(extra, dict):
+            return None
+        channel_id = str(source.thread_id or source.chat_id or "")
+        parent_id = str(source.parent_chat_id or "") or None
+        if not parent_id and source.thread_id and source.chat_id:
+            chat_id = str(source.chat_id)
+            if chat_id and chat_id != channel_id:
+                parent_id = chat_id
+        if not channel_id:
+            return None
+        from gateway.platforms.base import resolve_channel_model_binding
+        return resolve_channel_model_binding(extra, channel_id, parent_id)
+
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
+        channel_model_binding: Optional[dict[str, str]] = None,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
+
+        Precedence is: explicit session-scoped ``/model`` override, then an
+        event's channel model binding, then gateway/global defaults.
 
         Priority (highest first): session ``/model`` → ``channel_overrides`` → global config/env
         (``_resolve_gateway_model(user_config)`` and default provider resolution)."""
         from gateway.run import (
             _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
+            _resolve_channel_binding_runtime_kwargs,
         )
         skey = self._resolve_session_key_or_none(source, session_key)
         # Every exit path starts clean: the /model-override fast path returns before the pop below,
@@ -230,6 +262,22 @@ class GatewayTurnMixin:
             logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)
             model = runtime_model
 
+        # --- Channel model binding resolution ---
+        # If an event carries a channel_model_binding, resolve the provider's
+        # runtime credentials and apply the binding's model/provider/base_url.
+        # Session /model overrides always win; bindings apply only when no
+        # explicit override is active.
+        channel_binding = channel_model_binding if isinstance(channel_model_binding, dict) else None
+        if channel_binding is None:
+            channel_binding = self._resolve_source_channel_model_binding(source)
+        channel_provider = (channel_binding.get("provider") or "").strip() if channel_binding else ""
+
+        if channel_binding and channel_provider and not override:
+            binding_runtime = _resolve_channel_binding_runtime_kwargs(channel_binding)
+            if binding_runtime:
+                runtime_kwargs = binding_runtime
+                runtime_model = runtime_kwargs.pop("model", None)
+
         cfg = getattr(self, "config", None)  # getattr: bare object.__new__ test runners
         if cfg and source is not None:
             ch = _get_channel_override(
@@ -249,6 +297,43 @@ class GatewayTurnMixin:
 
         if override and skey:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)
+
+        # --- Apply channel model binding (model/provider/base_url) ---
+        # Bindings with a provider already had their runtime resolved above;
+        # bindings with only a model name apply here (after /model override
+        # and channel_overrides have been resolved).
+        if channel_binding and not override:
+            binding_runtime_model = str(runtime_model).strip() if runtime_model else ""
+            if not channel_provider:
+                # No explicit provider — resolve one now for the binding's model.
+                binding_runtime = _resolve_channel_binding_runtime_kwargs(channel_binding)
+                if binding_runtime:
+                    runtime_kwargs = binding_runtime
+                    binding_runtime_model = str(runtime_kwargs.pop("model", None) or "").strip()
+            binding_model = (channel_binding.get("model") or "").strip()
+            if not binding_model and binding_runtime_model:
+                binding_model = str(binding_runtime_model).strip()
+            if not binding_model and (channel_binding.get("provider") or "").strip():
+                try:
+                    from hermes_cli.models import get_default_model_for_provider
+                    binding_model = get_default_model_for_provider(
+                        (channel_binding.get("provider") or "").strip()
+                    ) or ""
+                except Exception:
+                    binding_model = ""
+            if binding_model:
+                logger.info(
+                    "Channel model binding applied: session=%s %s -> %s provider=%s",
+                    skey or "",
+                    model,
+                    binding_model,
+                    channel_binding.get("provider") or runtime_kwargs.get("provider"),
+                )
+                model = binding_model
+            for key in ("provider", "base_url", "api_mode"):
+                val = (channel_binding.get(key) or "").strip()
+                if val:
+                    runtime_kwargs[key] = val
 
         # Provider resolved but no model.default (`hermes auth add` without `hermes model`): use the
         # provider's first catalog model.
@@ -2176,6 +2261,7 @@ class GatewayTurnMixin:
                 run_generation=run_generation, event_message_id=self._reply_anchor_for_event(event),
                 inbound_message_id=str(event.message_id) if event.message_id else None,
                 channel_prompt=event.channel_prompt, moa_config=getattr(event, "_moa_config", None),
+                channel_model_binding=event.channel_model_binding,
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
@@ -3795,6 +3881,7 @@ class GatewayTurnMixin:
         # Queued Discord turns carry the same routing note as first turns; persist the authored text.
         next_persist_message = None
         next_display_kind = display_kind_for_event(pending_event)
+        next_channel_model_binding = None
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
@@ -3823,6 +3910,7 @@ class GatewayTurnMixin:
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+            next_channel_model_binding = getattr(pending_event, "channel_model_binding", None)
             next_message_type = getattr(pending_event, "message_type", None)
 
         # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
@@ -3868,7 +3956,9 @@ class GatewayTurnMixin:
                 source=next_source, session_id=session_id, session_key=next_session_key,
                 run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
-                channel_prompt=next_channel_prompt, message_type=next_message_type,
+                channel_prompt=next_channel_prompt,
+                channel_model_binding=next_channel_model_binding,
+                message_type=next_message_type,
                 persist_user_message=next_persist_message,
                 persist_user_display_kind=next_display_kind,
                 persist_user_display_metadata=diagnostic_metadata(pending_event) or None,
@@ -4191,6 +4281,7 @@ class GatewayTurnMixin:
         run_generation: Optional[int] = None, _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None, inbound_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,
+        channel_model_binding: Optional[dict] = None,
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
@@ -4227,6 +4318,7 @@ class GatewayTurnMixin:
             session_id=session_id, _interrupt_depth=_interrupt_depth,
             event_message_id=event_message_id, inbound_message_id=inbound_message_id,
             channel_prompt=channel_prompt, moa_config=moa_config,
+            channel_model_binding=channel_model_binding,
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
