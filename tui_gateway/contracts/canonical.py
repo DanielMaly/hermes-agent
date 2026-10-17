@@ -470,7 +470,7 @@ class WorkerScopeParams(Params):
     execution_id: str
     generation: int
     pid: int
-    birth: float
+    birth: float | str
     secret: str
 
 

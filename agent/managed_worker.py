@@ -446,7 +446,7 @@ def hello():
     the ancestor chain it observes. Launchers (uv's venv python.exe) put the owner's Popen
     handle one or two hops above; the owner, never this process, decides whether they match."""
     import psutil
-    from hermes_cli.process_identity import process_birth
+    from hermes_process_identity import process_birth
     me = psutil.Process()
     return {'pid': me.pid, 'birth': process_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]}
 
