@@ -104,43 +104,43 @@ class WorkerDelegationView:
 class WorkerDelegationLedger(Protocol):
     """The worker delegation operations; the receipted ones run on the worker's session ``session_id``."""
 
-    def dispatch_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, dispatch: WorkerDelegationDispatch | WorkerDelegationPayload, worker_pid: int, worker_birth: float, owner_started_at: int | None, probe_refused: Literal['permission_denied', 'worker_not_live'] | None = None) -> None:
+    def dispatch_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, dispatch: WorkerDelegationDispatch | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str, owner_started_at: int | None, probe_refused: Literal['permission_denied', 'worker_not_live'] | None = None) -> None:
         """``delegation.dispatch`` (gateway/session_worker_delegation.py:48-86). The payload: exactly the seven keys, the id text, a finite non-negative ``dispatched_at``, task keys within ``DELEGATION_TASK_KEYS``; a session that is missing or whose source is not in ``DELEGATION_ORIGIN_SOURCES`` is ``unsupported_producer``; route keys other than the session's own are ``permission_denied``; an existing id is checked for ownership then refused ``admission_conflict``; then ``probe_refused`` (the caller's probe of process ``worker_pid`` against ``worker_birth``, run before the call) is raised; then the row is inserted ``running`` with ``owner_pid`` ``worker_pid`` and ``owner_started_at``. An exact replay returns the stored receipt and ignores both probe values."""
         ...
 
-    def complete_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, completion: WorkerDelegationCompletion | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> None:
+    def complete_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, completion: WorkerDelegationCompletion | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> None:
         """``delegation.complete``: the keys ``event`` and ``result``, plus ``delivery`` when sent; a delivery other than ``pending`` or ``delivered``, event keys outside ``DELEGATION_EVENT_KEYS``, a ``type`` other than ``async_delegation``, a status outside ``DELEGATION_COMPLETION_STATUSES`` or a result that is not a dict are ``invalid_params``; ownership; route keys repeating the dispatch (``permission_denied``); a finite non-negative ``completed_at``; a delegation no longer running is ``admission_conflict``. The row takes the status, completion time, event, result and delivery (``pending`` when the key is absent)."""
         ...
 
-    def record_delegation_child(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, child: WorkerDelegationChild | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> None:
+    def record_delegation_child(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, child: WorkerDelegationChild | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> None:
         """``delegation.child`` (:108-121): ownership; an entry dict with a non-negative int ``task_index``; a running delegation keeps one entry per index in its partial result, any other is left untouched."""
         ...
 
-    def read_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, delegation_id: str | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> WorkerDelegationView:
+    def read_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, delegation_id: str | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> WorkerDelegationView:
         """``delegation.read`` (:124-129): ownership, then the view."""
         ...
 
-    def claim_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> bool:
+    def claim_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> bool:
         """``delegation.claim`` (:132-143): ownership and token text; a running delegation answers False; a pending delivery whose claim is free or older than ``DELEGATION_CLAIM_STALE_SECONDS`` takes the token and one attempt."""
         ...
 
-    def ack_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> bool:
+    def ack_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> bool:
         """``delegation.ack`` (:146-164): for a pending delivery held by the token, delivered now and the claim released; else False."""
         ...
 
-    def drop_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> bool:
+    def drop_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> bool:
         """``delegation.drop``: as ``ack``, the delivery dropped."""
         ...
 
-    def defer_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> bool:
+    def defer_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> bool:
         """``delegation.defer``: as ``ack``, one attempt refunded (never below 0)."""
         ...
 
-    def release_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> bool:
+    def release_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> bool:
         """``delegation.release``: as ``ack``, the delivery dropped once its attempts reach ``DELEGATION_MAX_DELIVERY_ATTEMPTS``."""
         ...
 
-    def withdraw_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, delegation_id: str | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> None:
+    def withdraw_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, delegation_id: str | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> None:
         """``delegation.unscheduled`` (:167-173): ownership; only a running delegation without a result is deleted (``admission_conflict`` otherwise)."""
         ...
 

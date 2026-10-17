@@ -87,7 +87,7 @@ class AdmissionWorkerScope:
     execution_id: WorkerExecutionId
     generation: ExecutionGeneration
     pid: int
-    birth: float
+    birth: float | str
     secret: str
     epoch: AuthorityEpoch
 
@@ -174,7 +174,7 @@ class WorkerExecutionRepository(WorkerSessionVerbs, WorkerCompressionRepository,
         """
         ...
 
-    def reserve_for_admission(self, *, epoch: AuthorityEpoch, admission_id: AdmissionId, principal_id: str, profile_id: str, pid: int, birth: float, secret: str, owner: OwnerRule | None, worker_subject: str | None = None) -> AdmissionWorkerScope:
+    def reserve_for_admission(self, *, epoch: AuthorityEpoch, admission_id: AdmissionId, principal_id: str, profile_id: str, pid: int, birth: float | str, secret: str, owner: OwnerRule | None, worker_subject: str | None = None) -> AdmissionWorkerScope:
         """Reserve a private compute worker for an admission ``epoch`` started (gateway/session_worker_reservation.py:251-293). The caller verifies the process identity (``pid``, ``birth``) and mints ``secret`` before the call.
 
         In one write: epoch fence; the admission (live or tombstone, else ``not_found``); not ``started`` under ``epoch`` is ``producer_not_started``; a stored principal that does not belong to ``principal_id`` under ``owner`` (``session_rules.legacy_local.same_owner``; without a rule only the equal stamp) is ``permission_denied``; the target's runtime generation differing from the admission's is ``stale_generation`` (a missing target ``not_found``); the physical target is resolved (an invalid binding receipt is ``storage_unavailable``); an existing ``admission-worker:<admission_id>`` execution is ``admission_conflict``; a non-terminal worker on the physical target ``stale_generation``. Then the physical target takes the admission's generation, joins the admission's lineage when it differs from the target, and a ``registered`` compute execution is inserted whose digest is the SHA-256 of ``admission_fingerprint`` over the scope and the principal the worker authenticates as (``worker_subject``, else ``principal_id``). Returns the scope and ``epoch``.
@@ -185,7 +185,7 @@ class WorkerExecutionRepository(WorkerSessionVerbs, WorkerCompressionRepository,
         """Revoke a reserved worker whose process was lost (gateway/session_worker_reservation.py:296-317); ``epoch`` is the reservation's. In one write: epoch fence; the admission (``not_found``); not ``started`` under ``epoch`` at ``generation`` is ``stale_generation``; a missing worker or one at another generation or epoch is ``stale_generation``. The worker becomes terminal (read receipts compacted, children retired), the admission ``unknown``, and the target's runtime revision moves by one."""
         ...
 
-    def reserve_child(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, secret: str | WorkerDelegationPayload, profile_id: str, pid: int, birth: float, principal: str, max_concurrent_children: int, max_spawn_depth: int, refused: str | None = None) -> ChildReservation:
+    def reserve_child(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, secret: str | WorkerDelegationPayload, profile_id: str, pid: int, birth: float | str, principal: str, max_concurrent_children: int, max_spawn_depth: int, refused: str | None = None) -> ChildReservation:
         """Operation ``child.reserve`` (``gateway/session_worker_child.py``): the digest covers the payload ``{"secret"}`` only; the claim fields, the two limits and ``refused`` (the caller's admission-closed or unreadable-policy code) are trusted values read before the call. A caller holding the worker's payload as sent passes it as a :class:`WorkerDelegationPayload` in place of ``secret``, so a payload of any other shape meets the fences first.
 
         After the fences and the replay, a payload other than ``{"secret"}`` with a string of 16 to 256 characters is ``invalid_params``. A refusal is a committed receipt, not an error: ``refused`` when given, else ``delegation_depth_exceeded`` when the execution id already holds ``max_spawn_depth`` child separators, else ``delegation_capacity`` when the execution has ``max_concurrent_children`` live direct children. Otherwise a ``subagent`` session row is minted (``model_config`` ``{"_delegate_from": session_id}``, the parent's profile) and a ``running`` child execution at generation 0 under ``epoch``, whose digest is the SHA-256 of ``admission_fingerprint`` over the child's scope and ``principal``.
