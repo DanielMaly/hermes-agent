@@ -10,6 +10,7 @@ from dataclasses import asdict
 from persistence.authority.vocabulary import admission_fingerprint
 from gateway.session_persistence import authority_persistence
 from persistence.core.errors import AuthorityRefusal
+from hermes_process_identity import matches_process_birth, valid_process_birth
 
 _SCOPE = {'profile_id', 'session_id', 'execution_id', 'generation', 'pid', 'birth', 'secret'}
 
@@ -24,12 +25,11 @@ def _claim(connection, ref, params):
     pid, birth = params.get('pid'), params.get('birth')
     secret = params.get('secret')
     if (type(pid) is not int or pid <= 0 or pid == os.getpid()
-            or type(birth) not in (int, float) or not isinstance(secret, str) or not 16 <= len(secret) <= 256):
+            or not valid_process_birth(birth) or not isinstance(secret, str) or not 16 <= len(secret) <= 256):
         raise AuthorityRefusal('invalid_params')
     try:
         process = psutil.Process(pid)
-        from hermes_cli.process_identity import worker_birth
-        if (worker_birth(process) != birth or not process.is_running()
+        if (not matches_process_birth(process, birth) or not process.is_running()
                 or process.status() == psutil.STATUS_ZOMBIE
                 or process.username() != psutil.Process().username()):
             raise AuthorityRefusal('permission_denied')

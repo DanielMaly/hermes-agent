@@ -89,7 +89,7 @@ def process_birth(proc) -> float:
     return float(proc.create_time())
 
 
-def worker_birth(proc) -> float:
+def worker_birth(proc) -> float | str:
     """The birth a managed worker's identity fences compare: its hello, its scope and the Kanban
     owner receipt. :func:`process_birth`, except on Linux, where psutil's ``create_time()`` adds the
     ``/proc/stat`` btime it re-reads on every call. WSL2 re-anchors btime after host sleep, so the
@@ -98,10 +98,8 @@ def worker_birth(proc) -> float:
     :func:`process_birth`: its persisted epoch births must keep matching across an update.
     Raises ``psutil.Error`` like ``create_time()``.
     """
-    import psutil
-    if getattr(psutil, "LINUX", False):
-        return float(proc._proc.create_time(monotonic=True))
-    return process_birth(proc)
+    from hermes_process_identity import process_birth as managed_process_birth
+    return managed_process_birth(proc)
 
 
 def boot_start(proc) -> Optional[float]:

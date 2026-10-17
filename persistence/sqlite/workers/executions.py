@@ -118,7 +118,7 @@ class SQLiteWorkerExecutionRepository:
                                          session_id=session_id, generation=generation, adoption_secret=adoption_secret)
         return _record(row)
 
-    def reserve_for_admission(self, *, epoch: AuthorityEpoch, admission_id: AdmissionId, principal_id: str, profile_id: str, pid: int, birth: float, secret: str,
+    def reserve_for_admission(self, *, epoch: AuthorityEpoch, admission_id: AdmissionId, principal_id: str, profile_id: str, pid: int, birth: float | str, secret: str,
                               owner: OwnerRule | None, worker_subject: str | None = None) -> AdmissionWorkerScope:
         with refused():
             scope = _gateway.reserve_admission_worker(self._store.holder(), epoch=epoch, admission_id=admission_id,
@@ -135,7 +135,7 @@ class SQLiteWorkerExecutionRepository:
             _gateway.lose_admission_worker(self._store.holder(), {'admission_id': admission_id}, {
                 'epoch': epoch, 'execution_id': execution_id, 'generation': generation})
 
-    def reserve_child(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, secret: str | WorkerDelegationPayload, profile_id: str, pid: int, birth: float, principal: str, max_concurrent_children: int, max_spawn_depth: int, refused: str | None = None) -> ChildReservation:
+    def reserve_child(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, secret: str | WorkerDelegationPayload, profile_id: str, pid: int, birth: float | str, principal: str, max_concurrent_children: int, max_spawn_depth: int, refused: str | None = None) -> ChildReservation:
         from ..authority._runtime import refused as refusals
         payload = secret.payload if isinstance(secret, WorkerDelegationPayload) else {'secret': secret}
         with refusals():
@@ -384,19 +384,19 @@ class SQLiteWorkerExecutionRepository:
 
     # ── WorkerDelegationLedger ────────────────────────────────────────────────
 
-    def dispatch_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, dispatch: WorkerDelegationDispatch | WorkerDelegationPayload, worker_pid: int, worker_birth: float, owner_started_at: int | None, probe_refused: Literal['permission_denied', 'worker_not_live'] | None = None) -> None:
+    def dispatch_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, dispatch: WorkerDelegationDispatch | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str, owner_started_at: int | None, probe_refused: Literal['permission_denied', 'worker_not_live'] | None = None) -> None:
         self._ledger('delegation.dispatch', delegation_payload(dispatch), epoch, execution_id, session_id, generation, sequence,
                      worker_pid, worker_birth, owner_started_at=owner_started_at, probe_refused=probe_refused)
 
-    def complete_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, completion: WorkerDelegationCompletion | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> None:
+    def complete_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, completion: WorkerDelegationCompletion | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> None:
         self._ledger('delegation.complete', delegation_payload(completion), epoch,
                      execution_id, session_id, generation, sequence, worker_pid, worker_birth)
 
-    def record_delegation_child(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, child: WorkerDelegationChild | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> None:
+    def record_delegation_child(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, child: WorkerDelegationChild | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> None:
         self._ledger('delegation.child', delegation_payload(child), epoch,
                      execution_id, session_id, generation, sequence, worker_pid, worker_birth)
 
-    def read_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, delegation_id: str | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> WorkerDelegationView:
+    def read_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, delegation_id: str | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> WorkerDelegationView:
         return WorkerDelegationView(**self._ledger('delegation.read', delegation_payload(delegation_id), epoch,
                                                    execution_id, session_id, generation, sequence, worker_pid,
                                                    worker_birth))
@@ -404,22 +404,22 @@ class SQLiteWorkerExecutionRepository:
     def _delivery(self, action: str, claim: WorkerDelegationClaim | WorkerDelegationPayload, *identity: Any) -> bool:
         return bool(self._ledger('delegation.' + action, delegation_payload(claim), *identity))
 
-    def claim_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> bool:
+    def claim_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> bool:
         return self._delivery('claim', claim, epoch, execution_id, session_id, generation, sequence, worker_pid, worker_birth)
 
-    def ack_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> bool:
+    def ack_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> bool:
         return self._delivery('ack', claim, epoch, execution_id, session_id, generation, sequence, worker_pid, worker_birth)
 
-    def drop_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> bool:
+    def drop_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> bool:
         return self._delivery('drop', claim, epoch, execution_id, session_id, generation, sequence, worker_pid, worker_birth)
 
-    def defer_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> bool:
+    def defer_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> bool:
         return self._delivery('defer', claim, epoch, execution_id, session_id, generation, sequence, worker_pid, worker_birth)
 
-    def release_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> bool:
+    def release_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> bool:
         return self._delivery('release', claim, epoch, execution_id, session_id, generation, sequence, worker_pid, worker_birth)
 
-    def withdraw_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, delegation_id: str | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> None:
+    def withdraw_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, delegation_id: str | WorkerDelegationPayload, worker_pid: int, worker_birth: float | str) -> None:
         self._ledger('delegation.unscheduled', delegation_payload(delegation_id), epoch, execution_id, session_id,
                      generation, sequence, worker_pid, worker_birth)
 
