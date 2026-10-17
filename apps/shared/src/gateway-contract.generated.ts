@@ -4838,7 +4838,7 @@ export interface WorkerRegisterParams {
   execution_id: string
   generation: number
   pid: number
-  birth: number
+  birth: number | string
   secret: string
   kind: string
 }
@@ -4860,7 +4860,7 @@ export interface WorkerScopeParams {
   execution_id: string
   generation: number
   pid: number
-  birth: number
+  birth: number | string
   secret: string
 }
 export interface WorkerPersistParams {
@@ -4869,7 +4869,7 @@ export interface WorkerPersistParams {
   execution_id: string
   generation: number
   pid: number
-  birth: number
+  birth: number | string
   secret: string
   epoch: number
   sequence: number

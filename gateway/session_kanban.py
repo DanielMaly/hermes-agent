@@ -105,7 +105,7 @@ async def run_task(connection, params):
     from hermes_cli import kanban_db as kb
     import os
     import psutil
-    from hermes_cli.process_identity import process_birth
+    from hermes_process_identity import process_birth
     context = json.loads(policy.kanban_json)
 
     def admit_claim():
