@@ -6,6 +6,8 @@ import sqlite3
 import time
 import psutil
 
+from hermes_process_identity import matches_process_birth
+
 
 def _owner_receipt(conn, task_id):
     """The parsed ``owner_admitted`` receipt of the task's CURRENT run, or None.
@@ -55,9 +57,8 @@ def owner_reclaim_paused(conn, task_id):
             return row[1] == 'interrupted'
         if row is None or row[0] in {'queued', 'unknown'}:
             return True
-        from hermes_cli.process_identity import worker_birth
-        return worker_birth(psutil.Process(receipt['pid'])) != receipt['birth']
-    except (OSError, ValueError, KeyError, TypeError, psutil.Error):
+        return not matches_process_birth(psutil.Process(receipt['pid']), receipt['birth'])
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError, psutil.Error):
         return True
 
 

@@ -48448,8 +48448,15 @@
             "type": "integer"
           },
           "birth": {
-            "title": "Birth",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Birth"
           },
           "secret": {
             "title": "Secret",
@@ -48520,8 +48527,15 @@
             "type": "integer"
           },
           "birth": {
-            "title": "Birth",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Birth"
           },
           "secret": {
             "title": "Secret",
@@ -48570,8 +48584,15 @@
             "type": "integer"
           },
           "birth": {
-            "title": "Birth",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Birth"
           },
           "secret": {
             "title": "Secret",

@@ -9,6 +9,7 @@ import subprocess
 
 from gateway.session_admission import admission_fingerprint
 from gateway.owner_identity import same_owner
+from hermes_process_identity import matches_process_birth, valid_process_birth
 from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, _secret_digest, _session
 
 # A venv launcher (uv's Windows python.exe, pip's exe shim) sits between the owner's
@@ -27,7 +28,7 @@ def verify_worker_identity(process, hello):
     if not isinstance(process, subprocess.Popen) or process.poll() is not None:
         raise RuntimeStoreError('worker_not_live')
     if (not isinstance(hello, dict) or hello.get('type') != 'hello' or type(hello.get('pid')) is not int
-            or type(hello.get('birth')) not in (int, float) or not isinstance(hello.get('ancestors'), list)
+            or not valid_process_birth(hello.get('birth')) or not isinstance(hello.get('ancestors'), list)
             or any(type(p) is not int for p in hello['ancestors'])):
         raise RuntimeStoreError('invalid_worker_frame')
     pid = hello['pid']
@@ -38,9 +39,8 @@ def verify_worker_identity(process, hello):
         if handle.ppid() != os.getpid() or handle.status() == psutil.STATUS_ZOMBIE:
             raise RuntimeStoreError('permission_denied')
         worker = psutil.Process(pid)
-        from hermes_cli.process_identity import worker_birth
-        birth = worker_birth(worker)  # kernel start: stable across clock steps (#140580) and btime re-anchors
-        if birth != hello['birth'] or not worker.is_running() or worker.status() == psutil.STATUS_ZOMBIE:
+        birth = hello['birth']
+        if not matches_process_birth(worker, birth) or not worker.is_running() or worker.status() == psutil.STATUS_ZOMBIE:
             raise RuntimeStoreError('permission_denied')
         # psutil's parent() already refuses a recycled ppid (parent born after child).
         chain = [p.pid for p in worker.parents()[:MAX_LAUNCHER_HOPS]]
