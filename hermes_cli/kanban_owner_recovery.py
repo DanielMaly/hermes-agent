@@ -6,7 +6,7 @@ import sqlite3
 import time
 import psutil
 
-from hermes_process_identity import matches_process_birth
+from hermes_process_identity import matches_process_birth, valid_process_birth
 
 
 def owner_reclaim_paused(conn, task_id):
@@ -81,15 +81,15 @@ def _owner_process_gone(receipt) -> bool:
     from hermes_cli import kanban_db as kb
     if not kb._pid_alive(pid):
         return True  # absent, or an exited zombie still waiting to be reaped
+    birth = receipt.get('birth')
+    if not valid_process_birth(birth):
+        return False  # missing/malformed evidence cannot prove this live pid was recycled
     try:
-        from hermes_cli.process_identity import process_birth
-        current = process_birth(psutil.Process(pid))
+        return not matches_process_birth(psutil.Process(pid), birth, raise_on_unreadable=True)
     except psutil.NoSuchProcess:
         return True
-    except psutil.Error:
+    except (psutil.Error, OSError, UnicodeError):
         return False
-    birth = receipt.get('birth')
-    return birth is not None and current != birth
 
 
 def _run_worker_pids(conn, task_row, task_id):
