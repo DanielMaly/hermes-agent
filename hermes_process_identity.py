@@ -52,8 +52,12 @@ def process_birth(process):
     return birth
 
 
-def matches_process_birth(process, birth):
-    """Compare like versions exactly; Linux read failure always rejects."""
+def matches_process_birth(process, birth, *, raise_on_unreadable=False):
+    """Compare like versions exactly; Linux read failure always rejects.
+
+    Reclaim callers can request an exception to distinguish unavailable evidence
+    from a proven mismatch. Authorization callers keep rejecting both by default.
+    """
     if not valid_process_birth(birth):
         return False
     if type(birth) in (int, float):
@@ -61,8 +65,12 @@ def matches_process_birth(process, birth):
             return process_birth(process) == birth
         return process.create_time() == birth
     if sys.platform != 'linux':
+        if raise_on_unreadable:
+            raise OSError('Linux worker identity unavailable on this platform')
         return False
     try:
         return process_birth(process) == birth
     except (OSError, UnicodeError):
+        if raise_on_unreadable:
+            raise
         return False
