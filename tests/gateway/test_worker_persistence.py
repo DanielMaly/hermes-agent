@@ -13,7 +13,8 @@ from tests.gateway.fixtures.local_recovery_probe import daemon, rpc, websocket
 
 
 @pytest.mark.platforms("linux")
-def test_worker_survives_owner_restart_without_repeating_tool(tmp_path):
+@pytest.mark.parametrize('birth_format', ['native', 'legacy'])
+def test_worker_survives_owner_restart_without_repeating_tool(tmp_path, birth_format):
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
     home.mkdir(mode=0o700)
@@ -45,7 +46,7 @@ def test_worker_survives_owner_restart_without_repeating_tool(tmp_path):
         try:
             with daemon(root, home, env, barrier=False) as (owner, desc):
                 sid = asyncio.run(create(desc))
-                first = command('start', home=str(home), session_id=sid)
+                first = command('start', home=str(home), session_id=sid, birth_format=birth_format)
                 assert first['registered'], first
                 assert first['rows'] == 3 and first['lost_ack_replayed']
                 assert first['wrong_session'] == 'permission_denied'
