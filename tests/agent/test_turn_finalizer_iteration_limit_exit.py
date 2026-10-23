@@ -168,6 +168,8 @@ def test_pending_response_does_not_mask_later_terminal_exit(
 def test_pending_response_records_kanban_timeout(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+    comment = MagicMock(name="add_comment")
+    monkeypatch.setattr("hermes_cli.kanban_db.add_comment", comment)
     record = MagicMock(name="record_task_failure")
     conn = SimpleNamespace(close=lambda: None)
     monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
@@ -190,7 +192,11 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
         release_claim=True,
         end_run=True,
         event_payload_extra={"budget_used": 60, "budget_max": 60},
+        partial_summary="composed report",
     )
+    comment.assert_called_once()
+    assert "partial_unverified" in str(comment.call_args)
+    assert "composed report" in str(comment.call_args)
 
 
 def test_published_pending_candidate_is_not_duplicated_by_finalizer(monkeypatch):
