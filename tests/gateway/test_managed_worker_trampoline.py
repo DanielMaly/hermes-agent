@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
+from hermes_process_identity import process_birth
 from hermes_state import SessionDB
 from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
@@ -29,13 +30,15 @@ LAUNCHER = ('import subprocess, sys\n'
             'sys.exit(child.wait())\n')
 
 
-def _hello(pid):
+def _hello(pid, birth_format='native'):
     proc = psutil.Process(pid)
-    return {'type': 'hello', 'pid': pid, 'birth': proc.create_time(),
+    return {'type': 'hello', 'pid': pid,
+            'birth': process_birth(proc) if birth_format == 'native' else proc.create_time(),
             'ancestors': [p.pid for p in proc.parents()[:4]]}
 
 
-def test_owner_binds_reservation_to_verified_descendant_of_the_handle_only(tmp_path):
+@pytest.mark.parametrize('birth_format', ['native', 'legacy'])
+def test_owner_binds_reservation_to_verified_descendant_of_the_handle_only(tmp_path, birth_format):
     from gateway.session_worker_reservation import reserve_admission_worker
     launcher = subprocess.Popen([sys.executable, '-c', LAUNCHER], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -54,16 +57,20 @@ def test_owner_binds_reservation_to_verified_descendant_of_the_handle_only(tmp_p
             kwargs = dict(admission_id=admitted['admission_id'], process=launcher, principal_id='human')
             # Alive, truthful birth, same user — but a sibling, not a descendant of the reserved handle.
             with pytest.raises(Exception, match='permission_denied'):
-                reserve_admission_worker(authority, hello=_hello(stranger.pid), **kwargs)
-            # The right pid with a forged birth is a recycled-pid claim.
+                reserve_admission_worker(authority, hello=_hello(stranger.pid, birth_format), **kwargs)
+            # The right pid with a forged birth is a recycled-pid claim (both wire versions).
+            hello = _hello(real, birth_format)
+            birth = hello['birth']
+            bad_birth = (birth.rsplit(':', 1)[0] + ':' + str(int(birth.rsplit(':', 1)[1]) + 1)
+                         if isinstance(birth, str) else birth + 1)
             with pytest.raises(Exception, match='permission_denied'):
-                reserve_admission_worker(authority, hello={**_hello(real), 'birth': _hello(real)['birth'] + 1}, **kwargs)
+                reserve_admission_worker(authority, hello={**hello, 'birth': bad_birth}, **kwargs)
             # A worker claiming the owner's own pid never adopts.
             with pytest.raises(Exception, match='permission_denied'):
-                reserve_admission_worker(authority, hello=_hello(os.getpid()), **kwargs)
+                reserve_admission_worker(authority, hello=_hello(os.getpid(), birth_format), **kwargs)
             assert db._read_one('SELECT COUNT(*) FROM worker_executions')[0] == 0
-            scope = reserve_admission_worker(authority, hello=_hello(real), **kwargs)
-            assert (scope['pid'], scope['birth']) == (real, psutil.Process(real).create_time())
+            scope = reserve_admission_worker(authority, hello=hello, **kwargs)
+            assert (scope['pid'], scope['birth']) == (real, birth)
             assert scope['pid'] != launcher.pid
     finally:
         # The real interpreter first, while it is still the launcher's child: killing the launcher

@@ -315,3 +315,77 @@ def test_an_earlier_runs_live_pid_does_not_hide_the_current_dead_run(board):
     board.event("t_ghost", run - 1, "spawned", {"pid": os.getpid()}, NOW - 100_000)
     board.conn.commit()
     assert [d.kind for d in board.diagnostics("t_ghost") if d.kind == "stale_running"] == ["stale_running"]
+
+
+@pytest.mark.platforms("linux")
+def test_live_tagged_owner_keeps_expired_claim_even_after_wall_clock_shift(board, monkeypatch):
+    import hermes_process_identity as identity
+    birth = identity.process_birth(psutil.Process())
+    assert birth.startswith('linux-v1:')
+    board.dead_attempt("t_live_owner", owner_pid=os.getpid(), owner_birth=birth)
+    original = psutil.Process.create_time
+    monkeypatch.setattr(psutil.Process, 'create_time', lambda proc: original(proc) + 3600)
+    assert kanban_owner_recovery._owner_process_gone({'pid': os.getpid(), 'birth': birth}) is False
+    assert owner_attempt_provably_over(board.conn, "t_live_owner") is False
+    assert kb.release_stale_claims(board.conn) == 0
+    assert board.state("t_live_owner")["status"] == "running"
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize('field', ['ticks', 'boot'])
+def test_valid_tagged_identity_mismatch_proves_owner_pid_recycled(field):
+    from hermes_process_identity import process_birth as worker_birth
+    birth = worker_birth(psutil.Process())
+    prefix, boot, ticks = birth.split(':')
+    if field == 'ticks':
+        ticks = str(int(ticks) + 1)
+    else:
+        boot = ('0' if boot[0] != '0' else '1') + boot[1:]
+    assert kanban_owner_recovery._owner_process_gone(
+        {'pid': os.getpid(), 'birth': ':'.join((prefix, boot, ticks))}) is True
+
+
+@pytest.mark.parametrize('offset, gone', [(0, False), (1, True)])
+def test_legacy_owner_birth_still_requires_exact_match(offset, gone):
+    birth = process_birth(psutil.Process())
+    assert kanban_owner_recovery._owner_process_gone(
+        {'pid': os.getpid(), 'birth': birth + offset}) is gone
+
+
+@pytest.mark.parametrize('birth', [None, True, -1, float('nan'), float('inf'), '', {},
+                                   'linux-v99:unknown:1', 'linux-v1:invalid:1'])
+def test_missing_or_malformed_owner_birth_is_not_proof_of_death(birth):
+    assert kanban_owner_recovery._owner_process_gone({'pid': os.getpid(), 'birth': birth}) is False
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize('fault', ['ticks', 'boot', 'encoding', 'access'])
+def test_unreadable_tagged_owner_identity_is_not_proof_of_death(monkeypatch, fault):
+    import hermes_process_identity as identity
+    birth = identity.process_birth(psutil.Process())
+    if fault == 'ticks':
+        monkeypatch.setattr(identity, '_proc_start_ticks', lambda pid: None)
+    elif fault == 'access':
+        def denied(pid):
+            raise psutil.AccessDenied(pid)
+        monkeypatch.setattr(kanban_owner_recovery.psutil, 'Process', denied)
+    else:
+        original = Path.read_text
+        def unreadable(path, *args, **kwargs):
+            if str(path) == '/proc/sys/kernel/random/boot_id':
+                if fault == 'encoding':
+                    raise UnicodeError('unreadable boot ID encoding')
+                raise PermissionError('unreadable boot ID')
+            return original(path, *args, **kwargs)
+        monkeypatch.setattr(Path, 'read_text', unreadable)
+    assert kanban_owner_recovery._owner_process_gone({'pid': os.getpid(), 'birth': birth}) is False
+
+
+@pytest.mark.parametrize('error, gone', [(psutil.NoSuchProcess, True), (psutil.AccessDenied, False)])
+def test_owner_identity_race_preserves_psutil_death_rules(monkeypatch, error, gone):
+    birth = process_birth(psutil.Process())
+    monkeypatch.setattr(kb, '_pid_alive', lambda pid: True)
+    def unavailable(pid):
+        raise error(pid)
+    monkeypatch.setattr(kanban_owner_recovery.psutil, 'Process', unavailable)
+    assert kanban_owner_recovery._owner_process_gone({'pid': os.getpid(), 'birth': birth}) is gone
