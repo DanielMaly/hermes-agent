@@ -6,7 +6,7 @@ import sys
 
 import psutil
 
-from hermes_cli.process_identity import worker_birth
+from hermes_process_identity import process_birth
 
 
 def writable_fds(home):
@@ -47,7 +47,9 @@ for line in sys.stdin:
             transport = module.WorkerRPC(home)
             scope = {'profile_id': str(home), 'session_id': command['session_id'],
                      'execution_id': 'owned-worker', 'generation': 0,
-                     'pid': os.getpid(), 'birth': worker_birth(psutil.Process()), 'secret': 'private-worker-secret'}
+                     'pid': os.getpid(), 'birth': (process_birth(psutil.Process())
+                         if command.get('birth_format', 'native') == 'native' else psutil.Process().create_time()),
+                     'secret': 'private-worker-secret'}
             registration = transport('worker.register', **scope, kind='compute')
             assert reason(lambda: transport('session.create', request_id='forbidden-worker-create', source='cli')) == 'permission_denied'
             scope['epoch'] = registration['owner_epoch']
@@ -91,7 +93,10 @@ for line in sys.stdin:
         else:
             stale = reason(lambda: transport('worker.persist', **saved))
             adopted = transport('worker.adopt', **{k: v for k, v in scope.items() if k != 'epoch'})
-            bad = dict(scope, birth=scope['birth'] + 1)
+            birth = scope['birth']
+            bad_birth = (birth.rsplit(':', 1)[0] + ':' + str(int(birth.rsplit(':', 1)[1]) + 1)
+                         if isinstance(birth, str) else birth + 1)
+            bad = dict(scope, birth=bad_birth)
             assert reason(lambda: transport('worker.adopt', **{k: v for k, v in bad.items() if k != 'epoch'})) == 'permission_denied'
             store.adopt(adopted['owner_epoch'])
             assert len(store.retry_pending()) == 1
