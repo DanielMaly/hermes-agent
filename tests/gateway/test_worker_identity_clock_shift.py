@@ -22,7 +22,7 @@ def worker(tmp_path):
     home = tmp_path / 'user'
     home.mkdir()
     env = {'PATH': os.environ['PATH'], 'HOME': str(home), 'HERMES_HOME': str(home / 'state'),
-           'TMPDIR': str(tmp_path), 'PYTHONPATH': str(root)}
+           'TMPDIR': str(tmp_path), 'PYTHONPATH': str(root), 'HERMES_DISABLE_LAZY_INSTALLS': 'true'}
     code = ('import sys; from pathlib import Path; import agent.managed_worker as m; '
             f'assert Path(m.__file__).resolve() == Path({str(root / "agent/managed_worker.py")!r}); '
             'hello = m.hello(); assert "agent.context_compressor" not in sys.modules; '
@@ -61,7 +61,7 @@ def _shift_clock(monkeypatch):
 @pytest.mark.asyncio
 async def test_clock_shift_preserves_reservation_persistence_and_recovery(tmp_path, monkeypatch, worker, shift_at):
     from agent.managed_worker import encode_frame, read_frame
-    from gateway.session_contract import Principal, SessionRef
+    from gateway.session_contract import SessionActor as Principal, SessionRef
     from gateway.session_worker import worker_request
     from gateway.session_worker_reservation import reserve_admission_worker
     from hermes_cli.kanban_owner_recovery import owner_reclaim_paused
@@ -122,7 +122,7 @@ async def test_clock_shift_preserves_reservation_persistence_and_recovery(tmp_pa
                                   'secret', 'generation', 'epoch', 'ancestry'])
 @pytest.mark.asyncio
 async def test_identity_drift_fix_keeps_rejections(tmp_path, monkeypatch, worker, fault):
-    from gateway.session_contract import Principal, SessionRef
+    from gateway.session_contract import SessionActor as Principal, SessionRef
     from gateway.session_worker import worker_request
     from gateway.session_worker_reservation import reserve_admission_worker
     child, hello = worker

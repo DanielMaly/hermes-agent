@@ -23,7 +23,9 @@ def test_worker_survives_owner_restart_without_repeating_tool(tmp_path, birth_fo
         'model': {'provider': 'custom', 'default': 'inert', 'base_url': 'http://127.0.0.1:9/v1'},
         'auxiliary': {'title_generation': {'enabled': False}}}))
     env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
-    env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root), OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL='http://127.0.0.1:9/v1')
+    env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
+               HERMES_DISABLE_LAZY_INSTALLS='true', OPENAI_API_KEY='loopback-only',
+               OPENAI_BASE_URL='http://127.0.0.1:9/v1')
     async def create(desc):
         async with websocket(home, desc) as ws:
             response = await rpc(ws, 'session.create', request_id='worker-session', source='cli')

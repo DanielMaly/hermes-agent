@@ -116,7 +116,8 @@ def test_managed_worker_completes_through_interpreter_trampoline(tmp_path):
         'auxiliary': {'title_generation': {'enabled': False}}, 'platform_toolsets': {'cli': []}}), encoding='utf-8')
     env = child_env()
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
-               OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url, PYTHONUNBUFFERED='1', UGW_TRAMPOLINE=str(trampoline))
+               HERMES_DISABLE_LAZY_INSTALLS='true', OPENAI_API_KEY='loopback-only',
+               OPENAI_BASE_URL=url, PYTHONUNBUFFERED='1', UGW_TRAMPOLINE=str(trampoline))
 
     def query(sql, args=()):
         with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
