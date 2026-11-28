@@ -90,13 +90,12 @@ def process_birth(proc) -> float:
 
 
 def worker_birth(proc) -> float | str:
-    """The birth a managed worker's identity fences compare: its hello, its scope and the Kanban
-    owner receipt. :func:`process_birth`, except on Linux, where psutil's ``create_time()`` adds the
-    ``/proc/stat`` btime it re-reads on every call. WSL2 re-anchors btime after host sleep, so the
-    owner read a live worker's birth shifted from the one it reported and refused it (KB-12). The
-    kernel's start ticks since boot (``monotonic=True``) never move. The spawn ledger keeps
-    :func:`process_birth`: its persisted epoch births must keep matching across an update.
-    Raises ``psutil.Error`` like ``create_time()``.
+    """Managed hello/scope/Kanban receipt identity, independent of Linux wall-clock steps.
+
+    Linux uses a versioned boot UUID plus exact kernel ticks, so identity cannot collide
+    across boots. Other hosts preserve :func:`process_birth` (including macOS's raw
+    kernel start). The separate spawn ledger and :func:`boot_start` remain numeric.
+    Raises when fresh kernel evidence is unavailable; never substitute a cached birth.
     """
     from hermes_process_identity import process_birth as managed_process_birth
     return managed_process_birth(proc)
