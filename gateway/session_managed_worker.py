@@ -316,6 +316,7 @@ class ManagedWorker:
             return
         try:
             proc = psutil.Process(self.worker[0])
+            from hermes_process_identity import matches_process_birth
             if matches_process_birth(proc, self.worker[1]):
                 (proc.kill if kill else proc.terminate)()
         except psutil.Error:

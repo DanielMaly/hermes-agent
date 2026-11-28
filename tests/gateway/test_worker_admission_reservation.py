@@ -178,7 +178,7 @@ def test_reservation_survives_a_clock_step_on_macos(tmp_path, stale_psutil_boot_
         db.admissions.claim(epoch=epoch, session_id='owned')
         kwargs = dict(admission_id=admitted.admission_id, process=process, principal_id='human')
         with pytest.raises(Exception, match='permission_denied'):  # a forged birth still fails
-            reserve_admission_worker(authority, hello=frame | {'birth': frame['birth'] + 1}, **kwargs)
+            reserve_admission_worker(authority, hello=frame | {'birth': (frame['birth'].rsplit(':', 1)[0] + ':' + str(int(frame['birth'].rsplit(':', 1)[1]) + 1) if isinstance(frame['birth'], str) else frame['birth'] + 1)}, **kwargs)
         scope = reserve_admission_worker(authority, hello=frame, **kwargs)
         assert scope['pid'] == process.pid and scope['birth'] == frame['birth']
     finally:
@@ -238,7 +238,7 @@ def test_reservation_survives_a_boot_time_reanchor_on_linux(tmp_path, monkeypatc
         db.admissions.claim(epoch=epoch, session_id='owned')
         kwargs = dict(admission_id=admitted.admission_id, process=process, principal_id='human')
         with pytest.raises(Exception, match='permission_denied'):  # a forged birth still fails
-            reserve_admission_worker(authority, hello=frame | {'birth': frame['birth'] + 1}, **kwargs)
+            reserve_admission_worker(authority, hello=frame | {'birth': (frame['birth'].rsplit(':', 1)[0] + ':' + str(int(frame['birth'].rsplit(':', 1)[1]) + 1) if isinstance(frame['birth'], str) else frame['birth'] + 1)}, **kwargs)
         scope = reserve_admission_worker(authority, hello=frame, **kwargs)
         assert scope['pid'] == process.pid and scope['birth'] == frame['birth']
     finally:
