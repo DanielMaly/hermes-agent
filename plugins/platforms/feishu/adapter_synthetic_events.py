@@ -147,6 +147,7 @@ class FeishuSyntheticEventsMixin:
         synthetic_event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=raw_message,
             message_id=message_id, channel_prompt=self._resolve_channel_prompt(chat_id),
+            channel_model_binding=self._resolve_channel_model_binding(chat_id),
             timestamp=datetime.now(),
         )
         await self._handle_message_with_guards(synthetic_event)

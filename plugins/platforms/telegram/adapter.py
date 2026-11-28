@@ -6426,5 +6426,218 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             user_name=user_name, thread_id=thread_id_str, chat_topic=chat_topic, message_id=str(message.message_id),
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
         reply_to_id, reply_to_text = self._reply_context(message)
+        from gateway.platforms.base import resolve_channel_prompt, resolve_channel_model_binding  # per-channel/topic ephemeral prompt
+        from plugins.platforms.telegram.telegram_context import group_identity_prompt, group_reply_expected
+        _chat_id_str = str(chat.id)
+        channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
+        return MessageEvent(
+            text=expand_link_entities(message), message_type=msg_type, source=source, raw_message=message,
+            message_id=str(message.message_id), platform_update_id=update_id,
+            user_id=source.user_id, user_name=source.user_name,
+            reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
+            channel_prompt=group_identity_prompt(self, message, channel_prompt), reply_expected=group_reply_expected(self, message, chat_type),
             channel_model_binding=resolve_channel_model_binding(
                 self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None),
+            edit_revision=self._edit_revision(message, update_id), timestamp=message.date)
+
+    @staticmethod
+    def _edit_revision(message, update_id: Optional[int]) -> Optional[str]:
+        """Identity of one edit of a message, None for a new send. ``edit_date`` has whole-second
+        resolution, so two edits in one second would share it: the update id is unique per edit and
+        stable on redelivery; without one, the edited text tells same-second edits apart."""
+        edit_date = getattr(message, "edit_date", None)
+        if not hasattr(edit_date, "timestamp"):
+            return None
+        if update_id is not None:
+            return f"u{update_id}"
+        text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").encode()
+        return f"{int(edit_date.timestamp())}.{hashlib.sha256(text).hexdigest()[:16]}"
+
+    # -- Message reactions (processing lifecycle) --
+
+    def _reactions_enabled(self) -> bool:
+        """Reactions: scoped ``TELEGRAM_REACTIONS`` → ``extra.reactions`` (YAML, per profile) → off.
+
+        An explicit env var wins over YAML, so the stock ``reactions: false`` every install
+        materializes cannot silently kill a documented ``TELEGRAM_REACTIONS=true`` (#109032). Under
+        multiplex a scoped miss falls to the profile's own YAML, never another profile's env (#72348).
+        """
+        configured = _extra_or_secret(self.config.extra, "reactions", "TELEGRAM_REACTIONS", None)
+        if configured is None:
+            return False
+        return str(configured).lower() not in {"false", "0", "no"}
+
+    async def _set_reaction(self, chat_id: str, message_id: str, emoji: Optional[str]) -> bool:
+        """Set a single emoji reaction (``None`` clears all bot-set reactions, the documented Bot API way)."""
+        if not self._bot:
+            return False
+        try:
+            await self._bot.set_message_reaction(chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id), reaction=emoji)
+            return True
+        except Exception as e:
+            if emoji is None:
+                logger.debug("[%s] clear reactions failed: %s", self.name, _redact_telegram_error_text(e))
+            else:
+                logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, _redact_telegram_error_text(e))
+            return False
+
+    async def _clear_reactions(self, chat_id: str, message_id: str) -> bool:
+        """Clear all bot-set reactions."""
+        return await self._set_reaction(chat_id, message_id, None)
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add an in-progress reaction when message processing begins."""
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if chat_id and message_id:
+            await self._set_reaction(chat_id, message_id, "\U0001f440")
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Swap the in-progress reaction for a final success/failure reaction (set_message_reaction
+        replaces, not adds); CANCELLED explicitly clears the 👀."""
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if not (chat_id and message_id):
+            return
+        if outcome == ProcessingOutcome.CANCELLED:
+            await self._clear_reactions(chat_id, message_id)
+        else:
+            await self._set_reaction(chat_id, message_id, "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e")
+
+
+# -- Plugin registration glue: register(ctx) plus the hook implementations (adapter factory, YAML→env/extra
+# config, setup wizard, standalone sender).
+# ────────────────────────────────────────────────────────────────────────── Plugin migration glue (#41112 /
+# #3823) Added when the Telegram adapter (+ its telegram_network satellite) moved from gateway/platforms/
+# into this bundled plugin. Mirrors the Discord (#24356) / Slack migrations: a register(ctx) entry point
+# plus hook implementations that replace the per-platform core touchpoints (the Platform.TELEGRAM branch in
+# gateway/run.py, the telegram_cfg YAML→env/extra block in gateway/config.py, the _setup_telegram wizard +
+# _PLATFORMS["telegram"] static dict in hermes_cli/{setup,gateway}.py; the out-of-process sender lives in
+# standalone.py as standalone_sender_fn). Telegram uses the generic token connected check, so no is_connected override
+# is needed. ──────────────────────────────────────────────────────────────────────────
+def _build_adapter(config):
+    """Construct TelegramAdapter and apply the notification mode."""
+    adapter = TelegramAdapter(config)
+    try:
+        adapter._notifications_mode = resolve_notifications_mode()
+    except Exception:
+        adapter._notifications_mode = "important"
+    return adapter
+
+
+def _is_connected(config) -> bool:
+    """Connected when a bot token is configured (env or PlatformConfig.token); the SDK being importable is
+    not enough or the plugin-enable pass would enable Telegram on any machine with it installed."""
+    token = getattr(config, "token", None)
+    if not token:
+        import hermes_cli.gateway as gateway_mod
+        token = gateway_mod.get_env_value("TELEGRAM_BOT_TOKEN") or ""
+    return bool(str(token).strip())
+
+
+def interactive_setup() -> None:
+    """Configure Telegram credentials and allowlist via the CLI setup wizard (lazy import)."""
+    setup_platforms._setup_telegram()
+
+
+def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
+    """Translate config.yaml telegram: keys into TELEGRAM_* env vars and PlatformConfig.extra. Env vars
+    take precedence over YAML. Returns extras to merge into PlatformConfig.extra, or None.
+
+    Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy telegram_cfg block from
+    gateway/config.py::load_gateway_config().
+    """
+    import json as _json
+    from gateway.platforms._shared import yaml_env_setter
+    extras: dict = {}
+    # Under multiplex a secondary profile's settings must NOT hit the process-global env (first-writer-wins
+    # would pin them for every profile, #72348); yaml_env_setter skips the write under its scope and the
+    # values flow via extra/secret scope instead.
+    _set_env = yaml_env_setter()
+
+    def _bridge_lower(key: str, env: str) -> None:
+        if key in telegram_cfg:
+            extras.setdefault(key, telegram_cfg[key])
+            _set_env(env, str(telegram_cfg[key]).lower())
+
+    def _bridge_gate(key: str, env: str, value: Any, *, seed_extra: bool = False) -> None:
+        """CSV allowlist gate: list → comma-joined; env write skipped under multiplex secret scope."""
+        if value is None:
+            return
+        if seed_extra:
+            extras.setdefault(key, value)
+        _set_env(env, value)
+
+    for _topic_key in ("disable_topic_auto_rename", "dm_topic_auto_transfer"):
+        if _topic_key in telegram_cfg:
+            extras.setdefault(_topic_key, telegram_cfg[_topic_key])
+    _effective_rm = telegram_cfg.get("require_mention", yaml_cfg.get("require_mention"))
+    if _effective_rm is not None:
+        _set_env("TELEGRAM_REQUIRE_MENTION", str(_effective_rm).lower())
+    if "mention_patterns" in telegram_cfg:
+        _set_env("TELEGRAM_MENTION_PATTERNS", _json.dumps(telegram_cfg["mention_patterns"]))
+    for key, env in (
+        ("exclusive_bot_mentions", "TELEGRAM_EXCLUSIVE_BOT_MENTIONS"), ("allow_bots", "TELEGRAM_ALLOW_BOTS"),
+        ("bots_require_mention", "TELEGRAM_BOTS_REQUIRE_MENTION"),
+        ("guest_mode", "TELEGRAM_GUEST_MODE", ), ("observe_unmentioned_group_messages", "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES")):
+        _bridge_lower(key, env)
+    # No extras seed for allowed_chats / allowed_topics / group_allowed_chats: the shared-key loop already
+    # bridges them with their original type and this merge would clobber it.
+    for key, env, seed in (
+        ("free_response_chats", "TELEGRAM_FREE_RESPONSE_CHATS", True), ("free_response_topics", "TELEGRAM_FREE_RESPONSE_TOPICS", False),
+        ("allowed_chats", "TELEGRAM_ALLOWED_CHATS", False), ("allowed_topics", "TELEGRAM_ALLOWED_TOPICS", False),
+        ("ignored_threads", "TELEGRAM_IGNORED_THREADS", True)):
+        _bridge_gate(key, env, telegram_cfg.get(key), seed_extra=seed)
+    _bridge_lower("reactions", "TELEGRAM_REACTIONS")
+    if "proxy_url" in telegram_cfg:
+        # Seeded into extra so ``_build_ptb_requests`` keeps a secondary's route without the env bridge.
+        extras.setdefault("proxy_url", str(telegram_cfg["proxy_url"]).strip())
+        _set_env("TELEGRAM_PROXY", str(telegram_cfg["proxy_url"]).strip())
+    _telegram_extra = telegram_cfg.get("extra") if isinstance(telegram_cfg.get("extra"), dict) else {}
+    _telegram_rtm = telegram_cfg["reply_to_mode"] if "reply_to_mode" in telegram_cfg else _telegram_extra.get("reply_to_mode")
+    if _telegram_rtm is not None:
+        _set_env("TELEGRAM_REPLY_TO_MODE", "off" if _telegram_rtm is False else str(_telegram_rtm).lower())
+    _bridge_gate("allow_from", "TELEGRAM_ALLOWED_USERS", telegram_cfg.get("allow_from"))
+    _bridge_gate("group_allow_from", "TELEGRAM_GROUP_ALLOWED_USERS", telegram_cfg.get("group_allow_from") or _telegram_extra.get("group_allow_from"))
+    _bridge_gate(
+        "group_allowed_chats", "TELEGRAM_GROUP_ALLOWED_CHATS",
+        telegram_cfg.get("group_allowed_chats") or _telegram_extra.get("group_allowed_chats"))
+    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics"):
+        if _key in telegram_cfg:
+            extras.setdefault(_key, telegram_cfg[_key])
+    # Pass through telegram-specific extra keys but EXCLUDE generic shared-config keys: _merge_platform_map
+    # already applied top-level-over-nested precedence and re-emitting them via dict.update() would undo it.
+    _GENERIC_MERGE_KEYS = {
+        "reply_prefix", "reply_in_thread", "reply_to_mode", "unauthorized_dm_behavior", "notice_delivery",
+        "require_mention", "channel_skill_bindings", "channel_prompts", "gateway_restart_notification", "allow_from",
+        "allow_admin_from", "dm_policy", "group_policy"}
+    for _k, _v in _telegram_extra.items():
+        if _k not in _GENERIC_MERGE_KEYS:
+            extras.setdefault(_k, _v)
+    return extras or None
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    from .adapter_hint import PLATFORM_HINT, PLATFORM_HINT_TOOL_NOTES
+    from .dashboard_card import DASHBOARD_CARD
+    from .standalone import standalone_send
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    ctx.register_platform(
+        name="telegram", label="Telegram", adapter_factory=_build_adapter, check_fn=telegram_deps_present,
+        **DASHBOARD_CARD,
+        ensure_deps_fn=check_telegram_requirements, is_connected=_is_connected, required_env=["TELEGRAM_BOT_TOKEN"],
+        install_hint=t("platform.telegram.install_hint"), setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, cron_deliver_env_var="TELEGRAM_HOME_CHANNEL",
+        standalone_sender_fn=standalone_send, max_message_length=4096, emoji="✈️", allow_update_command=True,
+        platform_hint=PLATFORM_HINT, platform_hint_tool_notes=PLATFORM_HINT_TOOL_NOTES,
+        display_tier="high",
+        # Mobile inbox: quiet tool_progress / busy-ack, but keep interim commentary and heartbeats.
+        display_overrides={"tool_progress": "off", "busy_ack_detail": False},
+        target_ref_syntax_fn=parse_send_target,
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
+    )

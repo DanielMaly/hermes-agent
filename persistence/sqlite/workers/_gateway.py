@@ -335,7 +335,7 @@ def worker_delegation_handlers(execution_id, worker_pid, worker_birth, owner_sta
         raise AuthorityRefusal('invalid_params')
     from hermes_process_identity import valid_process_birth
     if not valid_process_birth(worker_birth):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     handlers = {name: partial(fn, execution_id=execution_id) for name, fn in {
         'complete': _complete, 'child': _child, 'read': _read, 'claim': _claim,
         'unscheduled': _unscheduled}.items()}
