@@ -33,7 +33,7 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_diagnostics as kd
 from hermes_cli import kanban_owner_recovery
-from hermes_cli.process_identity import worker_birth
+from hermes_cli.process_identity import worker_birth, process_birth
 from persistence_assembly import open_persistence, profile_scope
 from tests.fixtures.storage_holder import raw_holder
 from tests.fixtures.storage_seed import seed_admission, seed_session
@@ -347,7 +347,7 @@ def test_live_tagged_owner_keeps_expired_claim_even_after_wall_clock_shift(board
     import hermes_process_identity as identity
     birth = identity.process_birth(psutil.Process())
     assert birth.startswith('linux-v1:')
-    board.dead_attempt("t_live_owner", owner_pid=os.getpid(), owner_birth=birth)
+    board.dead_attempt("t_live_owner", owner_pid=os.getpid(), owner_birth=birth, admission=("unknown", None))
     original = psutil.Process.create_time
     monkeypatch.setattr(psutil.Process, 'create_time', lambda proc: original(proc) + 3600)
     assert kanban_owner_recovery._owner_process_gone({'pid': os.getpid(), 'birth': birth}) is False
