@@ -318,9 +318,6 @@ class GatewayTurnPrepareMixin:
 
         if override and skey:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)
-        # A channel's own provider or the session's /model replaced the route resolution fell back to.
-        set_pending_primary_auth_failure(failure_for_route(primary_auth_failure, resolved_route, runtime_kwargs))
-
         from gateway.run import _resolve_channel_binding_runtime_kwargs
         # --- Apply channel model binding (model/provider/base_url) ---
         # Resolve a binding's whole route after channel overrides, never over /model.
@@ -355,6 +352,9 @@ class GatewayTurnPrepareMixin:
                 val = (channel_binding.get(key) or "").strip()
                 if val:
                     runtime_kwargs[key] = val
+
+        # Record fallback failure only for the final selected route, including bindings.
+        set_pending_primary_auth_failure(failure_for_route(primary_auth_failure, resolved_route, runtime_kwargs))
 
         # Provider resolved but no model.default (`hermes auth add` without `hermes model`): use the
         # provider's first catalog model.
